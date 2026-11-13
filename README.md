@@ -49,6 +49,9 @@ Choose it in **Settings → City source** (applies after *Save & reload*). The d
 | Camera | V, mouse drag, wheel | Y, right stick up/down | ◎, drag empty screen |
 | Pause | Esc | Start | ☰ |
 
+**On foot (WALK):** touch down slowly on the ground or a rooftop and the HUD switches from HOVER to **WALK**. Forward/back
+walks, Boost runs (**RUN**), left/right turns, strafe sidesteps, up jumps and takes off again; firing works as in flight.
+
 ## 4. Settings: 3D detail
 Open **Settings** from the start screen or the pause menu. The two detail options apply immediately, without reloading:
 * **City detail** (Very low, Low, Medium, High, Ultra) sets how sharp Google's 3D buildings are. Higher looks better but uses
@@ -120,6 +123,25 @@ same with keyboard, gamepad and touch, for both characters.
   when slow, below about 22 m/s). You turn by banking: left/right rolls the body, the turn rate follows the bank angle, and the
   bank stays until you roll back (no auto-level). Boost drains the **BOOST** gauge on the HUD, which recharges when you let go.
 
+## Walking mode
+A slow touchdown on the street or on a roof switches to walking (the HUD shows **WALK**, **RUN** or **STUMBLE**). In Easy and
+Medium a fast touchdown skims along the ground (LANDED) and switches to walking once it has slowed to about 18 m/s (Gundam) or
+9 m/s (dragon). In Hard, touching down faster than 15 m/s makes the character stumble for about a second (knees give way, a
+lurch forward, no control), then it walks.
+* **Speeds:** the Gundam walks at 4.5 m/s and runs at 12 m/s (Boost), backs up at 2.5 m/s, sidesteps at 3 m/s and turns at
+  50°/s; the dragon walks at 2 m/s, runs at 6 m/s, backs up at 1.2 m/s, sidesteps at 1.2 m/s and turns at 90°/s. Running on
+  foot does not use the Hard BOOST gauge.
+* **Feet on the surface:** the feet follow the street or roof and step smoothly up and down small ledges (up to 3 m for the
+  Gundam, 0.8 m for the dragon). Anything taller is a wall and blocks you. Walking off a higher edge (more than 4 m / 1.5 m)
+  drops you into flight. Up (Space, RT, right stick up) jumps and takes off.
+* **Gundam:** its legs are jointed at the hip, knee and ankle (split out of the flight model by tools/build_gundam_legs.js), so
+  it walks with a stride that lengthens when running, a body bob that keeps the lower foot on the ground, the shield arm and
+  (when not aiming) the rifle arm swinging opposite the legs, a slight forward lean when running, and a dust puff at each
+  footfall. "Camera shake" in Settings (off by default) adds a tiny nudge per step.
+* **Dragon:** walks with its wings raised together over its back (they do not flap), a small bob and waddle per step, its
+  tail swaying and its head nodding; the rider stays in place.
+* **Camera:** the chase camera comes lower and closer on foot, blended in and out over about a second so it never jumps.
+
 ## Weapons and destructible buildings
 Aim with the crosshair in the middle of the screen and fire (F, left click, gamepad RB/X, or the FIRE button on touch screens).
 * **Gundam - beam rifle:** the right arm swings up to aim along the crosshair (the arm and rifle are a separate part pivoted at
@@ -158,7 +180,7 @@ Dragging still turns the camera. The app searches the 3D tiles within 250 m of t
 plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 
 ## Files
-* `models/gundam_rx78_18m.glb` flight model (static pose, rifle and shield in hand, faces +X). Its head is a separate node (`head`, pivoted at the neck) so in flight it looks into turns (up to 30°) and up/down with climbs and dives, while the body banks into turns and pitches back when climbing and forward when diving.
+* `models/gundam_rx78_18m.glb` flight model (static pose, rifle and shield in hand, faces +X). Its head is a separate node (`head`, pivoted at the neck) so in flight it looks into turns (up to 30°) and up/down with climbs and dives, while the body banks into turns and pitches back when climbing and forward when diving. The legs (hip, knee and ankle: `thighL/R`, `shinL/R`, `footL/R`) and the shield arm (`armL`) are separate nodes too, split by `tools/build_gundam_legs.js` (all three detail levels), for the walking animation.
 * `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The fists stay closed around a round bar in one overhand grip the whole time (the finger curl is baked into the mesh, so no extra joints are needed on phones), and the arms are solved every frame so the forearms stay near vertical under the bar while the elbows travel down and out.
 * `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses

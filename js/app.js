@@ -54,8 +54,12 @@
   const D_UP = [0, Math.sin(D_PITCH), Math.cos(D_PITCH)];     // flight "up" in the dragon's native frame (yaw axis)
   const D_FWD = [0, -Math.cos(D_PITCH), Math.sin(D_PITCH)];   // flight "forward" in the native frame (wing-beat axis)
   const CHARACTERS = {
-    gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, phys: { mass: 43.4, thrust: 7, climb: 5, rollRate: 45 * DEG, lift: "thrusters", stall: 0 }, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45] },
-    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, phys: { mass: 0.9, thrust: 14, climb: 9, rollRate: 110 * DEG, lift: "wings", stall: 22 }, center: 6.0 * DRAGON_SCALE, eye: RIDER_EYE[1] * DRAGON_SCALE, eyeFwd: RIDER_EYE[0] * DRAGON_SCALE + 0.15, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M] }
+    gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, phys: { mass: 43.4, thrust: 7, climb: 5, rollRate: 45 * DEG, lift: "thrusters", stall: 0 }, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45],
+      // walking (m/s, deg/s, m): run = Shift; step = highest ledge it steps onto (higher blocks), drop = edge it walks off,
+      // enter = slowest ground speed that switches to walking, probe = how far ahead walls are checked
+      walk: { walk: 4.5, run: 12, back: 2.5, side: 3, turn: 50, step: 3.0, drop: 4.0, jump: 9, enter: 18, probe: 5, probeSide: 3.5 } },
+    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, phys: { mass: 0.9, thrust: 14, climb: 9, rollRate: 110 * DEG, lift: "wings", stall: 22 }, center: 6.0 * DRAGON_SCALE, eye: RIDER_EYE[1] * DRAGON_SCALE, eyeFwd: RIDER_EYE[0] * DRAGON_SCALE + 0.15, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M],
+      walk: { walk: 2, run: 6, back: 1.2, side: 1.2, turn: 90, step: 0.8, drop: 1.5, jump: 6, enter: 9, probe: 2.5, probeSide: 1.0 } }
   };
   const PILOT_HEIGHT = 1.75;
   const BAR_HEIGHT = 22.18;        // centre of the closed fists in the pull-up rig (feet 0.6 m off the ground at full hang)
@@ -993,6 +997,7 @@ void main() {
     fly.h = 40 + (spawn.alt || 150);  // Tokyo geoid ≈ +37 m; corrected to true AGL once tiles report ground
     fly.needsAglFix = spawn.alt || 150;
     fly.ground = undefined;
+    fly.walking = false; fly.stumbleT = 0; fly.walkBlend = 0; fly.gait = 0; fly.gaitRun = 0; fly.walkPhase = 0; fly.bob = 0;
   }
 
   function updateFlight(dt) {
@@ -1000,7 +1005,7 @@ void main() {
     const diff = settings.difficulty;
     // boost gauge (Hard): drains while boosting, recharges otherwise; Easy/Medium have unlimited boost
     if (fly.stamina === undefined) fly.stamina = 1;
-    let boosting = input.boost;
+    let boosting = input.boost && !fly.walking;
     if (diff === "hard") {
       if (boosting && fly.stamina > 0) fly.stamina = Math.max(0, fly.stamina - dt * 0.22);
       else { boosting = false; fly.stamina = Math.min(1, fly.stamina + dt * (input.boost ? 0.04 : 0.12)); }
@@ -1009,7 +1014,20 @@ void main() {
     const boost = boosting ? BOOST : 1;
     const tf = input.fwd >= 0 ? input.fwd * MAX_FWD * boost : input.fwd * MAX_BACK;
     const ts = input.strafe * MAX_STRAFE * (boosting ? 1.6 : 1), tu = input.vert * MAX_VERT * (boosting ? 1.8 : 1);
-    if (diff === "easy") {
+    const WK = CH().walk;
+    if (fly.walking) {
+      // on foot: forward/back walks (Shift runs), left/right turns, Q/E sidesteps; up jumps and takes off
+      const stumbling = fly.stumbleT > 0;
+      if (stumbling) fly.stumbleT = Math.max(0, fly.stumbleT - dt);
+      const run = input.boost && !stumbling;
+      const wf = stumbling ? 0 : input.fwd >= 0 ? input.fwd * (run ? WK.run : WK.walk) : input.fwd * WK.back;
+      const ws = stumbling ? 0 : input.strafe * WK.side;
+      const kw = 1 - Math.exp(-dt * (stumbling ? 3 : 5));
+      fly.vf += (wf - fly.vf) * kw; fly.vs += (ws - fly.vs) * kw; fly.vu = 0;
+      fly.yawRate += ((stumbling ? 0 : input.turn * WK.turn * DEG) - fly.yawRate) * (1 - Math.exp(-dt * 8));
+      fly.bankH = 0;
+      if (!stumbling && input.vert > 0.3) { fly.walking = false; fly.vu = WK.jump; fly.h += 0.05; fly.grounded = false; }
+    } else if (diff === "easy") {
       // arcade: velocities follow the stick at once, no gravity or inertia, direct turns
       fly.vf = tf; fly.vs = ts; fly.vu = tu; fly.yawRate = input.turn * TURN_RATE; fly.bankH = 0;
     } else if (diff === "medium") {
@@ -1059,13 +1077,15 @@ void main() {
 
     // collision with buildings ahead: probe along horizontal velocity
     const hs = Math.hypot(ve, vn);
-    if (hs > 0.5 && fly.ground !== undefined && (fly.frame++ % 2 === 0 || hs > 40)) {
-      const dist = 6 + hs * 0.18, ue = ve / hs, un = vn / hs;
+    if (hs > 0.5 && fly.ground !== undefined && (fly.frame++ % 2 === 0 || hs > 40 || fly.walking)) {
+      // on foot: probe just ahead, and anything taller than a step blocks (the dragon steps up less than the Gundam)
+      const dist = fly.walking ? WK.probe + hs * 0.3 : 6 + hs * 0.18, wide = fly.walking ? WK.probeSide : 3.5, stepUp = fly.walking ? WK.step : 3.0;
+      const ue = ve / hs, un = vn / hs;
       for (const side of [0, -1, 1]) {
-        const pe = ue * dist + (-un) * side * 3.5, pn = un * dist + ue * side * 3.5;
+        const pe = ue * dist + (-un) * side * wide, pn = un * dist + ue * side * wide;
         const p = offsetLL(fly.lat, fly.lon, pe, pn);
         const ph = groundHeightAt(p.lon, p.lat, excl);
-        if (ph !== undefined && ph > fly.h + 3.0) { // a wall taller than a step: blocked
+        if (ph !== undefined && ph > fly.h + stepUp) { // a wall taller than a step: blocked
           const into = ve * ue + vn * un;
           if (into > 0) { ve -= into * ue; vn -= into * un; }
           if (hs > 25) { fly.impactT = 0.7; }
@@ -1079,9 +1099,21 @@ void main() {
     fly.lat = np.lat; fly.lon = np.lon;
     fly.h += fly.vu * dt;
     if (fly.ground !== undefined) {
-      if (fly.h <= fly.ground + 0.02) { fly.h = fly.ground; if (fly.vu < 0) fly.vu = 0; fly.grounded = true; } else fly.grounded = false;
+      if (fly.walking) {
+        // feet stay on the surface: step up and down small ledges smoothly; walking off a higher edge drops into flight
+        if (fly.ground < fly.h - WK.drop) { fly.walking = false; fly.grounded = false; fly.stumbleT = 0; }
+        else { fly.h += (fly.ground - fly.h) * (1 - Math.exp(-dt * 12)); if (Math.abs(fly.ground - fly.h) < 0.02) fly.h = fly.ground; fly.grounded = true; }
+      } else if (fly.h <= fly.ground + 0.02) {
+        const touchdown = !fly.grounded, impact = Math.hypot(fly.vf, fly.vs, fly.vu);
+        fly.h = fly.ground; if (fly.vu < 0) fly.vu = 0; fly.grounded = true;
+        // Hard: touching down faster than 15 m/s stumbles (about a second without control), then walks
+        if (touchdown && settings.difficulty === "hard" && impact > 15) { fly.walking = true; fly.stumbleT = 1.2; }
+        // a slow touchdown (or slowing down on the ground) switches to walking
+        else if (Math.hypot(fly.vf, fly.vs) <= WK.enter && input.vert < 0.3) fly.walking = true;
+      } else fly.grounded = false;
       if (fly.h > fly.ground + MAX_ALT_AGL) { fly.h = fly.ground + MAX_ALT_AGL; fly.vu = Math.min(fly.vu, 0); }
     }
+    fly.walkBlend = (fly.walkBlend || 0) + ((fly.walking ? 1 : 0) - (fly.walkBlend || 0)) * (1 - Math.exp(-dt * 2.5));
 
     // body attitude: lean into motion, bank into turns (only when airborne)
     const air = fly.grounded ? 0.15 : 1;
@@ -1090,23 +1122,32 @@ void main() {
     const targetBank = settings.difficulty === "hard" ? (fly.bankH || 0) * air + (fly.vs / MAX_STRAFE) * 8 * DEG * air
       : (fly.yawRate / TURN_RATE) * 22 * DEG * air + (fly.vs / MAX_STRAFE) * 12 * DEG * air;
     const k = 1 - Math.exp(-dt * 3);
-    fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k;
+    const gaitSpeed = Math.hypot(fly.vf, fly.vs);
+    if (fly.walking) {   // upright on foot: a slight forward lean when running, a lurch forward while stumbling
+      const lw = (Math.max(0, fly.vf) / WK.run) * (fly.character === "dragon" ? 4 : 9) + (fly.stumbleT > 0 ? 16 * Math.sin(Math.min(1, fly.stumbleT / 1.2) * Math.PI) : 0);
+      fly.lean += (lw * DEG - fly.lean) * (1 - Math.exp(-dt * 6)); fly.bank += (0 - fly.bank) * (1 - Math.exp(-dt * 6));
+    } else { fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k; }
+    updateGait(dt, gaitSpeed, WK);
     // head: looks into the turn (up to 30 deg) and a little up/down with climbs and dives
     const kh = 1 - Math.exp(-dt * 5);
     const turn = Math.max(-1, Math.min(1, fly.yawRate / TURN_RATE + 0.35 * fly.vs / MAX_STRAFE));
     fly.headYaw = (fly.headYaw || 0) + (turn * 30 * DEG - (fly.headYaw || 0)) * kh;
     fly.headPitch = (fly.headPitch || 0) + (Math.max(-1, Math.min(1, fly.vu / MAX_VERT)) * 12 * DEG - (fly.headPitch || 0)) * kh;
     if (fly.model) {
-      fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, CH().center);
+      const waddle = fly.character === "dragon" ? Math.sin(fly.walkPhase) * 3 * DEG * fly.gait : 0;
+      fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h + fly.bob, fly.az, -fly.lean, fly.bank + waddle, CH().center);
       if (fly.character === "dragon") {
-        // wings: slow beats when cruising, faster and deeper on boost, nearly folded when landed
-        const beat = fly.grounded ? 0.35 : input.boost ? 2.2 : 0.9 + 0.6 * Math.min(1, Math.abs(fly.vu) / MAX_VERT);
+        // wings: slow beats when cruising, faster and deeper on boost, nearly folded when landed, still while walking
+        const beat = fly.walking ? 0 : fly.grounded ? 0.35 : input.boost ? 2.2 : 0.9 + 0.6 * Math.min(1, Math.abs(fly.vu) / MAX_VERT);
         fly.wingPhase = ((fly.wingPhase || 0) + dt * beat * 2 * Math.PI) % (2 * Math.PI);
-        const amp = (fly.grounded ? 4 : input.boost ? 34 : 22) * DEG;
+        const amp = (fly.walking ? 0 : fly.grounded ? 4 : input.boost ? 34 : 22) * DEG;
         fly.wingAmp = (fly.wingAmp || amp) + (amp - (fly.wingAmp || amp)) * (1 - Math.exp(-dt * 3));
         // the rider sits on the neck holding the horns, so the head turns a little less than the Gundam's
         const fa = dragonFireAnim();
-        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7 + fa[0], fly.wingAmp * Math.sin(fly.wingPhase) + (fly.grounded ? 25 * DEG : 0) + fa[1], -fly.headYaw * 0.6);
+        const fold = (fly.grounded ? 25 * DEG : 0) + DRAGON_WALK_FOLD * (fly.walkBlend || 0);
+        // walking: the head nods with each step and the tail sways from side to side
+        const nod = Math.sin(fly.walkPhase * 2) * 4 * DEG * fly.gait, sway = Math.sin(fly.walkPhase) * 16 * DEG * fly.gait;
+        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7 + fa[0] + nod, fly.wingAmp * Math.sin(fly.wingPhase) + fold + fa[1], -fly.headYaw * 0.6 + sway);
       } else {
         // while aiming, the head looks along the line of fire
         const aiming = fly.fireT !== undefined && fly.fireT < 1.4;
@@ -1127,7 +1168,7 @@ void main() {
     $("hudAglMs").textContent = isFinite(agl) ? (agl / CH().height).toFixed(1) + " × " + CH().unit : "";
     $("hudElev").textContent = (fly.h - (demoMode ? 0 : 37)).toFixed(0);
     $("hudVs").textContent = fly.vu.toFixed(1);
-    $("hudMode").textContent = (fly.grounded ? "LANDED" : fly.boosting ? "BOOST" : settings.difficulty === "hard" && fly.vu < -6 ? "SINK" : "HOVER") + " · " + DIFFICULTIES[settings.difficulty].toUpperCase();
+    $("hudMode").textContent = (fly.walking ? (fly.stumbleT > 0 ? "STUMBLE" : gaitSpeed > WK.walk * 1.3 ? "RUN" : "WALK") : fly.grounded ? "LANDED" : fly.boosting ? "BOOST" : settings.difficulty === "hard" && fly.vu < -6 ? "SINK" : "HOVER") + " · " + DIFFICULTIES[settings.difficulty].toUpperCase();
     const hard = settings.difficulty === "hard"; $("hudBoostRow").hidden = !hard;
     if (hard) { $("hudBoost").style.width = (fly.stamina * 100).toFixed(0) + "%"; $("hudBoost").classList.toggle("low", fly.stamina < 0.2); }
     $("impact").classList.toggle("on", fly.impactT > 0);
@@ -1149,11 +1190,13 @@ void main() {
     }
     // chase / far / side distances suit the character's size
     // the camera looks just above the character, so the crosshair (screen centre) and the line of fire clear its head
-    const lift = ch.center + ch.height * (fly.cam === 2 ? 0.11 : 0.62);
+    // on foot the chase camera comes lower and closer (blended over about a second, so it never jumps)
+    const wb = fly.cam === 0 ? fly.walkBlend || 0 : 0;
+    const lift = ch.center + ch.height * (fly.cam === 2 ? 0.11 : 0.62 - 0.2 * wb);
     const target = C.Cartesian3.fromDegrees(fly.lon, fly.lat, fly.h + lift);
-    const baseRange = fly.cam === 0 ? ch.cams[0] : fly.cam === 1 ? ch.cams[1] : ch.cams[2];
+    const baseRange = fly.cam === 0 ? ch.cams[0] * (1 - 0.25 * wb) : fly.cam === 1 ? ch.cams[1] : ch.cams[2];
     let range = baseRange * look.zoom;
-    let pitch = cam.pitch * DEG + look.pitch;
+    let pitch = (cam.pitch + 4 * wb) * DEG + look.pitch;
     const small = fly.character === "dragon", minRange = small ? 3.5 : 12, floor = small ? 0.8 : 2;
     // keep the camera above the street or roof below the character: when looking up (camera below the focus point), the
     // camera comes closer along the same line instead of tilting the view; tilt only if even the closest distance is too low
@@ -1206,10 +1249,10 @@ void main() {
   }
   function dragonMouthWorld() { const s = DRAGON_SCALE, m = DRAGON_MOUTH; return toWorld(fly.model.modelMatrix, [m[0] * s, -m[2] * s, m[1] * s]); }
   // at most MAX_FX particle systems at once (flashes do not count); the oldest goes first
-  function addEffect(sys, life) {
-    scene.primitives.add(sys); effects.push({ sys, t: 0, life });
-    let n = effects.filter((e) => e.sys).length;
-    for (let i = 0; i < effects.length && n > MAX_FX; i++) if (effects[i].sys) { scene.primitives.remove(effects[i].sys); effects.splice(i, 1); i--; n--; }
+  function addEffect(sys, life, isDust) {
+    scene.primitives.add(sys); effects.push({ sys, t: 0, life, dust: !!isDust });
+    let n = effects.filter((e) => e.sys && !e.dust).length;   // dust puffs have their own small cap (see dust)
+    for (let i = 0; i < effects.length && n > MAX_FX; i++) if (effects[i].sys && !effects[i].dust) { scene.primitives.remove(effects[i].sys); effects.splice(i, 1); i--; n--; }
   }
   function burst(pos, o) {
     const gravity = o.gravity || 0, sc = new C.Cartesian3();
@@ -1219,7 +1262,7 @@ void main() {
       minimumParticleLife: o.life * 0.6, maximumParticleLife: o.life, minimumSpeed: o.v0, maximumSpeed: o.v1, imageSize: new C.Cartesian2(o.px, o.px),
       emissionRate: 0, bursts: [new C.ParticleBurst({ time: 0, minimum: Math.round(o.n * FX_SCALE), maximum: Math.round(o.n * FX_SCALE) })], lifetime: 60, loop: false, sizeInMeters: true,   // one burst; removed by updateEffects
       updateCallback: gravity ? (p, dt) => { C.Cartesian3.normalize(p.position, sc); C.Cartesian3.multiplyByScalar(sc, -gravity * dt, sc); C.Cartesian3.add(p.velocity, sc, p.velocity); } : undefined
-    }), o.life + 0.3);
+    }), o.life + 0.3, o.dust);
   }
   function flash(pos, color, size, life) { const pt = glowPoints.add({ position: pos, color: C.Color.fromCssColorString(color), pixelSize: size, outlineWidth: 0, disableDepthTestDistance: 0 });
     effects.push({ point: pt, t: 0, life, size }); }
@@ -1358,6 +1401,71 @@ void main() {
     const a = shake * 0.0105; camera.lookRight((Math.random() - 0.5) * a); camera.lookUp((Math.random() - 0.5) * a);
     shake *= Math.exp(-dt * 10);
   }
+  // ---- walking gait ------------------------------------------------------------------
+  // Gundam legs (gundam_rx78_18m*.glb, split by tools/build_gundam_legs.js): thigh -> shin -> foot under the body node,
+  // pivots at hip / knee / ankle (body-node units, +y up, +z forward, +x = its left); a negative turn about x swings forward.
+  const LEG_T = 7.6, LEG_S = 13.3, LEG_F = 4.6, LEG_REST = LEG_T + LEG_S + LEG_F;   // hip-knee, knee-ankle, ankle-sole (units)
+  const LEG_NODES = { thighL: [3.2, 25.5, 0], shinL: [0, -7.6, -0.1], footL: [0, -13.3, 0.1], thighR: [-3.2, 25.5, 0], shinR: [0, -7.6, -0.1], footR: [0, -13.3, 0.1], armL: [6.4, 38.6, -0.9] };
+  const DRAGON_WALK_FOLD = 55 * DEG;   // walking: the wings are raised together over the back (they have no fold joint)
+  const scratchLegM3 = new C.Matrix3();
+  function legNodes(model) {
+    if (!model || !model.ready) return null;
+    if (model.__legs === undefined) { const n = {}; try { for (const k in LEG_NODES) n[k] = model.getNode(k); } catch (e) { /* older model */ }
+      model.__legs = Object.keys(LEG_NODES).every((k) => n[k]) ? n : null; }
+    return model.__legs;
+  }
+  function setLeg(node, name, ang) { const t = LEG_NODES[name]; node.matrix = C.Matrix4.fromRotationTranslation(C.Matrix3.fromRotationX(ang, scratchLegM3), new C.Cartesian3(t[0], t[1], t[2]), node.matrix ? C.Matrix4.clone(node.matrix) : new C.Matrix4()); }
+  function updateGait(dt, speed, WK) {
+    // gait: 0 standing .. 1 walking, gaitRun 0 walk .. 1 run; the phase advances with the distance covered
+    const moving = fly.walking && fly.stumbleT <= 0 ? Math.min(1, speed / (WK.walk * 0.6)) : 0;
+    fly.gait = (fly.gait || 0) + (moving - (fly.gait || 0)) * (1 - Math.exp(-dt * 5));
+    const runT = Math.max(0, Math.min(1, (speed - WK.walk) / (WK.run - WK.walk)));
+    fly.gaitRun = (fly.gaitRun || 0) + (runT - (fly.gaitRun || 0)) * (1 - Math.exp(-dt * 4));
+    const dragon = fly.character === "dragon";
+    const cycle = dragon ? 1.6 + 1.4 * fly.gaitRun : 8 + 7 * fly.gaitRun;   // metres per full cycle (two steps)
+    const prev = fly.walkPhase || 0;
+    if (fly.walking) fly.walkPhase = (prev + (Math.max(speed, fly.gait > 0.05 ? WK.walk * 0.3 : 0) * dt / cycle) * 2 * Math.PI) % (2 * Math.PI);
+    const ph = fly.walkPhase || 0, g = fly.gait, r = fly.gaitRun;
+    // footfalls (heel strike when a leg is furthest forward): dust puff, and a tiny nudge with "Camera shake" on
+    const crossed = (a) => fly.walking && g > 0.4 && (prev <= ph ? prev < a && a <= ph : a > prev || a <= ph);
+    if (crossed(Math.PI / 2)) footfall(1, r);
+    if (crossed(3 * Math.PI / 2)) footfall(-1, r);
+    let bob = 0;
+    if (dragon) {
+      bob = -Math.abs(Math.sin(ph)) * (0.05 + 0.08 * r) * g;
+      fly.armSwing = 0;
+    } else {
+      const legs = legNodes(fly.model);
+      // swing angles (radians). Left hip = -A sin(ph) (forward when sin > 0); the right leg is half a cycle later.
+      const A = (22 + 16 * r) * DEG * g, K = (35 + 40 * r) * DEG * g;
+      let st = 0; if (fly.stumbleT > 0) st = Math.sin(Math.min(1, (1.2 - fly.stumbleT) / 0.5) * Math.PI / 2) * Math.min(1, fly.stumbleT / 0.5);   // stumble: knees give way, then recover
+      const leg = (p) => { const hip = -A * Math.sin(p) - 32 * DEG * st, knee = 4 * DEG * g + K * Math.pow(Math.max(0, Math.cos(p)), 1.5) + 64 * DEG * st;
+        return { hip, knee, foot: -(hip + knee) * 0.85 }; };
+      const L = leg(ph), R = leg(ph + Math.PI);
+      if (legs) {
+        setLeg(legs.thighL, "thighL", L.hip); setLeg(legs.shinL, "shinL", L.knee); setLeg(legs.footL, "footL", L.foot);
+        setLeg(legs.thighR, "thighR", R.hip); setLeg(legs.shinR, "shinR", R.knee); setLeg(legs.footR, "footR", R.foot);
+        setLeg(legs.armL, "armL", (14 + 18 * r) * DEG * g * Math.sin(ph) + 10 * DEG * st);   // shield arm swings opposite the left leg
+      }
+      fly.armSwing = -(14 + 18 * r) * DEG * g * Math.sin(ph);   // rifle arm: forward when the left leg is forward
+      // the lower foot stays on the ground: drop the body by how much the legs are shortened
+      const ext = (q) => LEG_T * Math.cos(q.hip) + LEG_S * Math.cos(q.hip + q.knee) + LEG_F * Math.cos(q.hip + q.knee + q.foot);
+      bob = legs ? -(LEG_REST - Math.max(ext(L), ext(R))) * BODY_S : 0;
+    }
+    fly.bob = (fly.bob || 0) + (bob - (fly.bob || 0)) * (1 - Math.exp(-dt * 20));
+  }
+  function footfall(side, run) {
+    const dragon = fly.character === "dragon", s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
+    const fwd = dragon ? 0.8 : 3.2 + 2 * run, lat = (dragon ? 0.7 : 1.25) * side;   // side 1 = its left
+    const p = offsetLL(fly.lat, fly.lon, s * fwd - c * lat, c * fwd + s * lat);
+    dust(C.Cartesian3.fromDegrees(p.lon, p.lat, fly.ground + (dragon ? 0.1 : 0.3)), dragon ? 0.35 : 1);
+    if (!dragon && settings.camShake) shake = Math.max(shake, 0.12 + 0.1 * run);
+  }
+  function dust(pos, k) {
+    // a small dust puff; at most a few at once, and never in place of an explosion
+    if (effects.filter((e) => e.dust).length >= (LOW_GFX ? 3 : 6)) return;
+    burst(pos, { inner: "rgba(205,195,175,0.75)", outer: "rgba(160,150,130,0.45)", c0: "rgba(200,190,170,0.6)", c1: "rgba(160,150,130,0)", n: 12 * k + 3, v0: 0.4 * k, v1: 3 * k, life: 1.4, px: 4 * k, s0: 1, s1: 3, radius: 1.5 * k, dust: true });
+  }
   // fire animations
   function poseGundamArm(dt) {
     const t = fly.fireT === undefined ? 99 : fly.fireT;
@@ -1365,7 +1473,9 @@ void main() {
     const aim = t < 1.4 ? -(90 * DEG + (fly.aimPitch || 0) + fly.lean * 0.6) : 0;
     const recoil = t < 0.25 ? 10 * DEG * Math.exp(-t * 18) : 0;
     fly.armAngle = (fly.armAngle || 0) + (aim - (fly.armAngle || 0)) * (1 - Math.exp(-dt * (aim ? 14 : 4)));
-    const ang = fly.armAngle + recoil;
+    // walking: the rifle arm swings opposite the right leg, fading out as the arm comes up to aim
+    const swing = (fly.armSwing || 0) * Math.max(0, 1 - Math.abs(fly.armAngle) / (30 * DEG));
+    const ang = fly.armAngle + recoil + swing;
     const n = fly.model && fly.model.ready && (fly.model.__arm !== undefined ? fly.model.__arm : (fly.model.__arm = (() => { try { return fly.model.getNode("armR") || null; } catch (e) { return null; } })()));
     if (n) n.matrix = C.Matrix4.fromRotationTranslation(C.Matrix3.fromRotationX(ang), new C.Cartesian3(ARM_PIVOT[0], ARM_PIVOT[1], ARM_PIVOT[2]));
   }
