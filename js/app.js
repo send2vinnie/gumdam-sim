@@ -7,6 +7,26 @@
  */
 (function () {
   "use strict";
+  // ---- on-screen error overlay (so problems are visible on phones) ----------
+  let fatalBox = null;
+  function showFatal(msg) {
+    try {
+      if (!fatalBox) {
+        fatalBox = document.createElement("div");
+        fatalBox.style.cssText = "position:fixed;left:8px;right:8px;bottom:8px;max-height:60vh;overflow:auto;z-index:2147483647;" +
+          "background:rgba(10,12,20,0.94);color:#fff;font:12px/1.4 monospace;white-space:pre-wrap;word-wrap:break-word;" +
+          "padding:12px;border:1px solid #f55;border-radius:8px;";
+        fatalBox.title = "Tap to dismiss";
+        fatalBox.addEventListener("click", () => { fatalBox.remove(); fatalBox = null; });
+        (document.body || document.documentElement).appendChild(fatalBox);
+        fatalBox.textContent = "Device: " + navigator.userAgent + "\n(tap to dismiss)";
+      }
+      fatalBox.textContent = String(msg) + "\n\n" + fatalBox.textContent;
+    } catch (e) { /* ignore */ }
+  }
+  window.addEventListener("error", (e) => showFatal("JS error: " + e.message + " @" + e.filename + ":" + e.lineno));
+  window.addEventListener("unhandledrejection", (e) => showFatal("Promise error: " + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
+  if (typeof Cesium === "undefined") { showFatal("CesiumJS failed to load from cdn.jsdelivr.net"); return; }
   const C = Cesium;
   const CFG = window.SIM_CONFIG || {};
   const $ = (id) => document.getElementById(id);
@@ -41,18 +61,38 @@
   }[settings.quality] || { sse: 16, browserRes: true, fxaa: true, shadows: false, cacheBytes: 512 * 1024 * 1024 };
 
   // ---- viewer ---------------------------------------------------------------
-  const viewer = new C.Viewer("cesiumContainer", {
-    baseLayer: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
-    navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false, infoBox: false,
-    selectionIndicator: false, vrButton: false, projectionPicker: false,
-    terrainProvider: new C.EllipsoidTerrainProvider(),
-    useBrowserRecommendedResolution: QUALITY.browserRes,
-    msaaSamples: QUALITY.fxaa ? 4 : 1,
-    shadows: QUALITY.shadows
-  });
+  function makeViewer(extra) {
+    return new C.Viewer("cesiumContainer", Object.assign({
+      baseLayer: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+      navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false, infoBox: false,
+      selectionIndicator: false, vrButton: false, projectionPicker: false,
+      terrainProvider: new C.EllipsoidTerrainProvider(),
+      useBrowserRecommendedResolution: QUALITY.browserRes,
+      msaaSamples: QUALITY.fxaa ? 4 : 1,
+      shadows: QUALITY.shadows
+    }, extra || {}));
+  }
+  let viewer;
+  try {
+    viewer = makeViewer(isTouch ? {
+      msaaSamples: 1,
+      contextOptions: { webgl: { powerPreference: "default", antialias: false, preserveDrawingBuffer: false, failIfMajorPerformanceCaveat: false } }
+    } : undefined);
+  } catch (e1) {
+    console.error(e1);
+    try {
+      document.getElementById("cesiumContainer").innerHTML = "";
+      viewer = makeViewer({ msaaSamples: 1, contextOptions: { requestWebgl1: true, webgl: { antialias: false, failIfMajorPerformanceCaveat: false } } });
+    } catch (e2) {
+      console.error(e2);
+      showFatal("WebGL could not start: " + (e2.message || e2) + "\n(first attempt: " + (e1.message || e1) + ")");
+      return;
+    }
+  }
   const scene = viewer.scene;
   const camera = scene.camera;
-  scene.postProcessStages.fxaa.enabled = QUALITY.fxaa;
+  scene.renderError.addEventListener((s, e) => showFatal("Render error: " + ((e && (e.stack || e.message)) || e)));
+  scene.postProcessStages.fxaa.enabled = isTouch ? false : QUALITY.fxaa;
   scene.screenSpaceCameraController.enableInputs = false;
   scene.skyAtmosphere.show = true;
   scene.fog.enabled = true;
@@ -70,9 +110,10 @@
     if (settings.key) {
       try {
         C.GoogleMaps.defaultApiKey = settings.key;
+        const lowMem = isTouch && navigator.deviceMemory !== undefined && navigator.deviceMemory <= 4;
         tileset = await C.createGooglePhotorealistic3DTileset(undefined, {
-          maximumScreenSpaceError: QUALITY.sse,
-          cacheBytes: QUALITY.cacheBytes,
+          maximumScreenSpaceError: lowMem ? 40 : QUALITY.sse,
+          cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
           showCreditsOnScreen: true,
           dynamicScreenSpaceError: true,
           preferLeaves: false
@@ -82,6 +123,7 @@
         return;
       } catch (e) {
         console.error(e);
+        showFatal("Google 3D Tiles failed to load: " + (e.message || e));
         setStatus("Google 3D Tiles failed to load: " + (e.message || e) + ". Check the API key and that the Map Tiles API is enabled. Running in demo mode.", true);
       }
     } else {
@@ -511,7 +553,7 @@
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";
     await initWorld();
-    try { await buildLobby(); } catch (e) { console.error(e); setStatus("Could not build the start scene: " + (e.message || e), true); }
+    try { await buildLobby(); } catch (e) { console.error(e); showFatal("Could not build the start scene: " + ((e && (e.stack || e.message)) || e)); setStatus("Could not build the start scene: " + (e.message || e), true); }
     $("startBtn").disabled = false; $("startBtn").textContent = "Launch";
     window.GFS.ready = true;
   })();
