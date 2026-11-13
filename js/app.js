@@ -319,6 +319,21 @@ void main() {
     scene.primitives.add(model);
     return model;
   }
+  // Turn a model's "head" node (split out of the flight model, pivoted at the neck; model units, face along +Z, up +Y).
+  // yaw > 0 turns the head to the character's right, pitch > 0 looks up.
+  const HEAD_PIVOT = new C.Cartesian3(0, 40.45, 0);
+  const scratchHeadRot = new C.Matrix3(), scratchHeadYaw = new C.Matrix3(), scratchHeadPitch = new C.Matrix3();
+  function poseHead(model, yaw, pitch) {
+    if (!model || !model.ready) return;
+    let node = model.__headNode;
+    if (node === undefined) { try { node = model.getNode("head") || null; } catch (e) { node = null; } model.__headNode = node; }
+    if (!node) return;
+    C.Matrix3.fromRotationY(-yaw, scratchHeadYaw);
+    C.Matrix3.fromRotationX(-pitch, scratchHeadPitch);
+    C.Matrix3.multiply(scratchHeadYaw, scratchHeadPitch, scratchHeadRot);
+    node.matrix = C.Matrix4.fromRotationTranslation(scratchHeadRot, HEAD_PIVOT, node.matrix ? C.Matrix4.clone(node.matrix) : new C.Matrix4());
+  }
+
   function whenReady(model) {
     return new Promise((resolve) => {
       if (model.ready) return resolve(true);
@@ -689,11 +704,17 @@ void main() {
 
     // body attitude: lean into motion, bank into turns (only when airborne)
     const air = fly.grounded ? 0.15 : 1;
-    const targetLean = (fly.vf / (MAX_FWD * BOOST)) * 55 * DEG * air;
+    // lean forward with speed, back when climbing and forward when diving
+    const targetLean = ((fly.vf / (MAX_FWD * BOOST)) * 55 - (fly.vu / (MAX_VERT * 1.8)) * 18) * DEG * air;
     const targetBank = (fly.yawRate / TURN_RATE) * 22 * DEG * air + (fly.vs / MAX_STRAFE) * 12 * DEG * air;
     const k = 1 - Math.exp(-dt * 3);
     fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k;
-    if (fly.model) fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, MS_CENTER);
+    // head: looks into the turn (up to 30 deg) and a little up/down with climbs and dives
+    const kh = 1 - Math.exp(-dt * 5);
+    const turn = Math.max(-1, Math.min(1, fly.yawRate / TURN_RATE + 0.35 * fly.vs / MAX_STRAFE));
+    fly.headYaw = (fly.headYaw || 0) + (turn * 30 * DEG - (fly.headYaw || 0)) * kh;
+    fly.headPitch = (fly.headPitch || 0) + (Math.max(-1, Math.min(1, fly.vu / MAX_VERT)) * 12 * DEG - (fly.headPitch || 0)) * kh;
+    if (fly.model) { fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, MS_CENTER); poseHead(fly.model, fly.headYaw, fly.headPitch); }
     fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
     if (fly.pendingModel && fly.model) { fly.pendingModel.modelMatrix = fly.model.modelMatrix; fly.pendingModel.show = fly.model.show; }
 
