@@ -123,6 +123,10 @@ Aim with the crosshair in the middle of the screen and fire (F, left click, game
   the shoulder), with a recoil kick, a muzzle flash and the head looking at the target. A pink-white beam bolt flies at 600 m/s.
 * **Dragon - fireball:** the head rears back with a wing flare, then lunges forward and spits a glowing fireball (80 m/s, with
   a fire trail). The rider keeps both hands on the horns.
+* **Every shot explodes.** Each frame a beam or fireball checks the stretch it is about to fly through (and the street
+  below it), so it bursts on the first wall, roof or ground it meets, even if the aim ray at firing time missed it (the
+  fireball leaves the dragon's mouth, not the camera; tiles may load after firing). A shot that hits nothing bursts in the
+  air at the end of its range, and so does the oldest shot when too many are in the air.
 * **Hits** explode with fire, smoke, flying debris and a flash, and nudge the camera slightly when close (at most about
   0.3°, no roll, fading in half a second; "Camera shake" in Settings turns it off). The camera follows only the body's heading
   and position, never the arm raise or the head rear-back, and the ground and camera checks ignore your own shots and smoke.

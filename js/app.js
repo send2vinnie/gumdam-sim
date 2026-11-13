@@ -1155,11 +1155,11 @@ void main() {
   // ---- weapons: beam rifle (Gundam) and fireball (dragon); destructible buildings ----------------------
   // One ray per shot (from the crosshair) finds what it will hit; the projectile then just flies there, so firing stays cheap.
   const WEAPONS = { gundam: { speed: 600, range: 1600, cooldown: 0.35 }, dragon: { speed: 80, range: 800, cooldown: 0.9 } };
-  const MAX_SHOTS = LOW_GFX ? 3 : 6, MAX_FX = LOW_GFX ? 5 : 10, MAX_CLIPS = LOW_GFX ? 6 : 12, FX_SCALE = LOW_GFX ? 0.5 : 1;   // fewer projectiles/particles on Low
+  const MAX_SHOTS = LOW_GFX ? 3 : 6, MAX_FX = LOW_GFX ? 7 : 12, MAX_CLIPS = LOW_GFX ? 6 : 12, FX_SCALE = LOW_GFX ? 0.5 : 1;   // fewer projectiles/particles on Low
   const ARM_PIVOT = [-6.4, 38.6, -0.9], MUZZLE = [0.01, -36.79, 1.38];             // gundam_rx78_18m*.glb: armR node (model units)
   const BODY_T = [-0.23696897, 0, 0], BODY_S = 0.3889163389802798;                   // body node transform (rotation +90 deg about Y)
   const DRAGON_MOUTH = [12.23, 8.22, 0.22];                                         // dragon.glb flight frame (dragon units)
-  const shots = [], effects = [];
+  const shots = [], effects = [], shotLog = [];   // shotLog: how recent shots ended (for tests)
   const hiddenFeatures = new Map();   // tile content url -> Set(featureId) of destroyed PLATEAU buildings
   const hiddenOsm = new Set();
   let fireCooldown = 0, shake = 0, clipCount = 0;
@@ -1178,7 +1178,12 @@ void main() {
     return toWorld(fly.model.modelMatrix, [g[0], -g[2], g[1]]);                                 // glTF Y-up -> Cesium Z-up
   }
   function dragonMouthWorld() { const s = DRAGON_SCALE, m = DRAGON_MOUTH; return toWorld(fly.model.modelMatrix, [m[0] * s, -m[2] * s, m[1] * s]); }
-  function addEffect(sys, life) { scene.primitives.add(sys); effects.push({ sys, t: 0, life }); while (effects.length > MAX_FX) { const e = effects.shift(); scene.primitives.remove(e.sys); } }
+  // at most MAX_FX particle systems at once (flashes do not count); the oldest goes first
+  function addEffect(sys, life) {
+    scene.primitives.add(sys); effects.push({ sys, t: 0, life });
+    let n = effects.filter((e) => e.sys).length;
+    for (let i = 0; i < effects.length && n > MAX_FX; i++) if (effects[i].sys) { scene.primitives.remove(effects[i].sys); effects.splice(i, 1); i--; n--; }
+  }
   function burst(pos, o) {
     const gravity = o.gravity || 0, sc = new C.Cartesian3();
     addEffect(new C.ParticleSystem({
@@ -1261,8 +1266,12 @@ void main() {
     const from = dragon ? dragonMouthWorld() : gundamMuzzleWorld(fly.armAngle || 0);
     const dir = C.Cartesian3.normalize(C.Cartesian3.subtract(fly.fireTarget, from, new C.Cartesian3()), new C.Cartesian3());
     const dist = C.Cartesian3.distance(from, fly.fireTarget);
-    if (shots.length >= MAX_SHOTS) { const o = shots.shift(); removeShot(o); }
-    const s = { dragon, pos: C.Cartesian3.clone(from), dir, speed: W.speed, travelled: 0, dist, hit: fly.fireHit };
+    if (shots.length >= MAX_SHOTS) {   // too many in the air: the oldest bursts where it is
+      const o = shots.shift(); removeShot(o); explode(o.pos, false);
+      shotLog.push({ kind: "air", dragon: o.dragon, from: o.from, dir: C.Cartesian3.clone(o.dir), travelled: o.travelled });
+    }
+    // with no target picked at firing time the shot flies its full range and bursts in the air (never just vanishes)
+    const s = { dragon, from: C.Cartesian3.clone(from), pos: C.Cartesian3.clone(from), dir, speed: W.speed, travelled: 0, dist: fly.fireHit ? dist : Math.max(dist, W.range), hit: fly.fireHit };
     if (dragon) {
       s.point = glowPoints.add({ position: from, color: C.Color.fromCssColorString("#ff8a1e"), pixelSize: 26, outlineColor: C.Color.fromCssColorString("rgba(255,220,120,0.8)"), outlineWidth: 4 });
       s.trail = scene.primitives.add(new C.ParticleSystem({ image: sprite("rgba(255,240,180,1)", "rgba(255,110,20,0.9)"), modelMatrix: C.Transforms.eastNorthUpToFixedFrame(from), emitter: new C.SphereEmitter(0.4),
@@ -1282,14 +1291,30 @@ void main() {
     fireCooldown = Math.max(0, fireCooldown - dt);
     if (fly.fireT !== undefined) { fly.fireT += dt; if (fly.character === "dragon" && !fly.fireDone && fly.fireT >= 0.24) launch(); }
     for (let i = shots.length - 1; i >= 0; i--) {
-      const s = shots[i]; const step = Math.min(s.speed * dt, s.dist - s.travelled); s.travelled += step;
-      C.Cartesian3.add(s.pos, C.Cartesian3.multiplyByScalar(s.dir, step, new C.Cartesian3()), s.pos);
+      const s = shots[i]; const step = Math.min(s.speed * dt, s.dist - s.travelled);
+      // impact check along this frame's path segment (never skipped): the aim ray at firing time can miss what the
+      // projectile actually crosses (the fireball leaves the mouth, not the camera; tiles may load after firing)
+      let impact = null;
+      if (step > 0) {
+        const ray = new C.Ray(s.pos, s.dir);
+        let h; try { h = withOwnFxHidden(() => scene.pickFromRay(ray, [fly.model, fly.pendingModel, fly.rider].filter(Boolean), 0.5)); } catch (e) { h = undefined; }
+        if (h && h.position) { const d = C.Cartesian3.distance(s.pos, h.position); if (d <= step + 0.5) impact = { hit: h, d, kind: "segment" }; }
+      }
+      s.travelled += impact ? impact.d : step;
+      C.Cartesian3.add(s.pos, C.Cartesian3.multiplyByScalar(s.dir, impact ? impact.d : step, new C.Cartesian3()), s.pos);
+      if (!impact && localWorld) {   // below the street surface: hit the ground
+        const c = C.Cartographic.fromCartesian(s.pos); const gh = c && localWorld.ground.heightAt(c.longitude / DEG, c.latitude / DEG);
+        if (c && c.height <= gh + 0.2) impact = { hit: null, kind: "ground" };
+      }
       if (s.line) { const tail = C.Cartesian3.subtract(s.pos, C.Cartesian3.multiplyByScalar(s.dir, Math.min(70, s.travelled), new C.Cartesian3()), new C.Cartesian3()); s.line.positions = [tail, C.Cartesian3.clone(s.pos)]; }
       if (s.point) s.point.position = s.pos;
       if (s.trail) s.trail.modelMatrix = C.Transforms.eastNorthUpToFixedFrame(s.pos);
-      if (s.travelled >= s.dist - 1e-3) {
+      if (impact || s.travelled >= s.dist - 1e-3) {
         removeShot(s); shots.splice(i, 1);
-        if (s.hit) { explode(s.pos, s.dragon); destroyAt(s.hit); } else explode(s.pos, false);
+        const hit = impact ? impact.hit : s.hit, kind = impact ? impact.kind : s.hit ? "aimed" : "air";
+        explode(s.pos, s.dragon && kind !== "air");
+        if (hit) destroyAt(hit);
+        shotLog.push({ kind, dragon: s.dragon, from: s.from, dir: C.Cartesian3.clone(s.dir), travelled: s.travelled }); if (shotLog.length > 200) shotLog.shift();
       }
     }
     updateEffects(dt);
@@ -1427,7 +1452,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";
