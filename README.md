@@ -78,11 +78,20 @@ cameras never go into buildings: a ray from the character toward the camera pull
 (checked about 10-14 times a second), and it eases back out when the view is clear.
 
 ## Graphics quality: Low
-**Low** (the default on phones) draws only what is near: everything beyond **2 km** is not rendered (the city fades into a hazy
+**Low** (the default on phones) draws only what is near: everything beyond **3 km** is not rendered (the city fades into a hazy
 sky instead of a hard edge), small props (start-screen pilots, the dragon scene) disappear beyond 450 m, the screen renders at
 75 % resolution, city tiles are not requested while the camera moves fast, and projectiles/particle effects are capped lower.
 Measured in Shinjuku from 250 m up: draw calls 448 -> 99, city tiles drawn 53 -> 24, city geometry in memory 67 -> 27 MB,
-textures 379 -> 204 MB. Medium and High are unchanged.
+textures 379 -> 204 MB (measured with the earlier 2 km limit). Low is also capped at **30 FPS** (steadier frames, less heat
+and battery); a paused game draws at 10 FPS.
+
+On every quality setting:
+* **Tokyo areas stream by distance.** Each of the 6 Tokyo areas is opened when the camera comes within the draw distance
+  + 1 km of it (Low 4 km, others 7 km) and dropped, freeing its memory, 1.5 km beyond that. The Taipei start screen loads no
+  Tokyo tiles at all.
+* **Automatic resolution** (Settings, on by default). Every 2 s the game checks the frame rate: below 85 % of the target
+  (30 FPS on Low, 50 FPS otherwise) it renders 10 % fewer pixels, down to 50 % (Low) / 60 %; after 6 s at the target it
+  goes back up in 5 % steps to the normal scale (75 % on Low, 100 % otherwise).
 
 ## Flight difficulty
 Choose **Easy / Medium / Hard** on the start screen or in Settings (remembered, applied at once, shown on the HUD). It works the

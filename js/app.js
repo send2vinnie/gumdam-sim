@@ -74,7 +74,8 @@
     key: (store.get("key", "") || CFG.googleMapsApiKey || "").trim(),
     quality: store.get("quality", isTouch ? "low" : "medium"),
     invertY: store.get("invertY", false),
-    showFps: store.get("showFps", false)
+    showFps: store.get("showFps", false),
+    autoRes: store.get("autoRes", true)
   };
   // 3D detail: chosen live in Settings. Until the user picks, the defaults follow the graphics quality.
   const CITY_SSE = { verylow: 64, low: 32, medium: 16, high: 8, ultra: 4 };
@@ -138,8 +139,8 @@
   // Low graphics: draw only what is near. The far plane cuts everything (city tiles, models, effects) beyond RENDER_DISTANCE,
   // denser fog hides the edge, and the canvas renders at 75 % resolution.
   const LOW_GFX = settings.quality === "low";
-  const RENDER_DISTANCE = LOW_GFX ? 2000 : null;
-  if (LOW_GFX) { camera.frustum.far = RENDER_DISTANCE; scene.fog.density = 1.1e-3; scene.fog.minimumBrightness = 0.35; viewer.resolutionScale = 0.75;
+  const RENDER_DISTANCE = LOW_GFX ? 3000 : null;
+  if (LOW_GFX) { camera.frustum.far = RENDER_DISTANCE; scene.fog.density = 7.5e-4; scene.fog.minimumBrightness = 0.35; viewer.resolutionScale = 0.75;
     // the sky dome lies beyond the far plane, so paint a hazy sky instead; the cut-off then reads as distance haze
     scene.skyAtmosphere.show = false; scene.skyBox && (scene.skyBox.show = false); scene.backgroundColor = C.Color.fromCssColorString("#a9c6e2"); }
   const nearOnly = () => (LOW_GFX ? new C.DistanceDisplayCondition(0, 450) : undefined);   // small props: pilots, dragon scene
@@ -269,8 +270,27 @@ void main() {
       cells: 4, color: C.Color.fromCssColorString("#ffffff").withAlpha(0.08),
       glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.fromCssColorString("#4a4f55"), tileWidth: 256, tileHeight: 256
     }));
-    for (const w of LOCAL_WARDS) {
-      const ts = await C.Cesium3DTileset.fromUrl("cities/tokyo/" + w + "/tileset.json", {
+    // Tokyo areas stream in when the camera comes near them and are dropped (memory freed) when it leaves, so the start
+    // screen in Taipei loads no Tokyo tiles at all and a flight keeps only the area(s) around it.
+    await Promise.all(LOCAL_WARDS.map(async (w) => {
+      const j = await (await fetch("cities/tokyo/" + w + "/tileset.json")).json();
+      const [west, south, east, north] = j.root.boundingVolume.region;
+      wardSlots.push({ name: w, west, south, east, north, ts: null, loading: null, want: false });
+    }));
+    for (const txt of [LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
+    await loadNangang(ground);
+  }
+
+  const WARD_LOAD_M = (LOW_GFX ? RENDER_DISTANCE : 6000) + 1000;   // load an area when the camera is this close to its edge
+  const WARD_DROP_M = WARD_LOAD_M + 1500;                             // drop it beyond this (no flicker at the boundary)
+  const wardSlots = [];
+  function wardDistance(s, lon, lat) {   // metres from a point (radians) to an area's rectangle, 0 inside
+    const dx = lon < s.west ? s.west - lon : lon > s.east ? lon - s.east : 0;
+    const dy = lat < s.south ? s.south - lat : lat > s.north ? lat - s.north : 0;
+    return Math.hypot(dx * R_EARTH * Math.cos(lat), dy * R_EARTH);
+  }
+  async function openWard(s) {
+    const ts = await C.Cesium3DTileset.fromUrl("cities/tokyo/" + s.name + "/tileset.json", {
         maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
         cacheBytes: lowMem || LOW_GFX ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
         maximumCacheOverflowBytes: LOW_GFX ? 64 * 1024 * 1024 : undefined,
@@ -279,9 +299,33 @@ void main() {
         imageBasedLighting: skyLight(),
         shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
       });
-      ts.tileLoad.addEventListener((tile) => reapplyHidden(tile));   // destroyed buildings stay destroyed when tiles reload
-      scene.primitives.add(ts); tilesets.push(ts);
+    ts.tileLoad.addEventListener((tile) => reapplyHidden(tile));   // destroyed buildings stay destroyed when tiles reload
+    return ts;
+  }
+  // called about once a second (and right after a teleport): open areas near the camera, drop far ones
+  let wardCheckT = 0;
+  function updateWards(force) {
+    if (!wardSlots.length || (!force && performance.now() - wardCheckT < 1000)) return;
+    wardCheckT = performance.now();
+    const c = camera.positionCartographic;
+    for (const s of wardSlots) {
+      const d = wardDistance(s, c.longitude, c.latitude);
+      if (d < WARD_LOAD_M) s.want = true; else if (d > WARD_DROP_M) s.want = false;
+      if (s.want && !s.ts && !s.loading) {
+        s.loading = openWard(s).then((ts) => {
+          s.loading = null;
+          if (!s.want) { ts.destroy(); return; }
+          s.ts = ts; ts.maximumScreenSpaceError = CITY_SSE[settings.cityDetail];
+          scene.primitives.add(ts); tilesets.push(ts);
+        }).catch((e) => { s.loading = null; console.error(e); });
+      } else if (!s.want && s.ts) {
+        const i = tilesets.indexOf(s.ts); if (i >= 0) tilesets.splice(i, 1);
+        scene.primitives.remove(s.ts);   // destroys it and frees its tiles
+        s.ts = null;
+      }
     }
+  }
+  async function loadNangang(ground) {
     // refreshed OSM buildings (tools/build_nangang_osm.js); the older, smaller export is the fallback
     let osm;
     for (const f of ["cities/taipei/nangang-osm-v2.geojson", "cities/taipei/nangang-buildings.geojson"]) {
@@ -305,7 +349,6 @@ void main() {
       } catch (e) { /* skip a malformed footprint */ }
     }
     const osmPrimitive = scene.primitives.add(new C.Primitive({ geometryInstances: instances, appearance: new C.PerInstanceColorAppearance({ translucent: false, fragmentShaderSource: OSM_FS }), shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED }));
-    for (const txt of [LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
     localWorld = { ground, osm, osmPrimitive };
   }
 
@@ -1206,8 +1249,27 @@ void main() {
   // ---- main loop ------------------------------------------------------------
   const state = { mode: "lobby" };
   let last = performance.now(), fpsAcc = 0, fpsN = 0;
+  // automatic resolution: when the frame rate stays below the target, render fewer pixels (the canvas is scaled up);
+  // raise it again slowly once frames are fast enough. Every 2 s, between RES_MIN and the quality's normal scale.
+  const RES_MAX = LOW_GFX ? 0.75 : 1.0, RES_MIN = LOW_GFX ? 0.5 : 0.6, FPS_TARGET = LOW_GFX ? 30 : 50;
+  const autoRes = { t: 0, n: 0, good: 0 };
+  function updateAutoRes(rawDt) {
+    if (!settings.autoRes || document.hidden || state.mode === "pause" || rawDt > 1) { autoRes.t = autoRes.n = 0; return; }
+    autoRes.t += rawDt; autoRes.n++;
+    if (autoRes.t < 2) return;
+    const fps = autoRes.n / autoRes.t; autoRes.t = autoRes.n = 0;
+    let s = viewer.resolutionScale;
+    if (fps < FPS_TARGET * 0.85) { s = Math.max(RES_MIN, s - 0.1); autoRes.good = 0; }
+    else if (fps >= FPS_TARGET * 0.95) { if (++autoRes.good >= 3) { s = Math.min(RES_MAX, s + 0.05); autoRes.good = 0; } }
+    else autoRes.good = 0;
+    if (Math.abs(s - viewer.resolutionScale) > 0.001) viewer.resolutionScale = +s.toFixed(2);
+  }
+  // Low: 30 FPS cap (steadier frames, less heat and battery). Paused: 10 FPS (the menu still reads the gamepad).
+  const FRAME_CAP = LOW_GFX ? 30 : undefined;
+  if (FRAME_CAP) viewer.targetFrameRate = FRAME_CAP;
   scene.preUpdate.addEventListener(() => {
-    const now = performance.now(); const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    const now = performance.now(); const rawDt = (now - last) / 1000; const dt = Math.min(0.1, rawDt); last = now;
+    updateWards(); updateAutoRes(rawDt);
     if (state.mode === "fly") { updateFlight(dt); updateWeapons(dt); updateCamera(dt); applyShake(dt); }
     else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); }
     else if (state.mode === "pause") readInput();
@@ -1216,8 +1278,8 @@ void main() {
   });
 
   function togglePause() {
-    if (state.mode === "fly") { state.mode = "pause"; $("pause").hidden = false; $("touch").hidden = true; viewer.clock.shouldAnimate = false; }
-    else if (state.mode === "pause") { state.mode = "fly"; $("pause").hidden = true; $("touch").hidden = !isTouch; viewer.clock.shouldAnimate = true; last = performance.now(); }
+    if (state.mode === "fly") { state.mode = "pause"; $("pause").hidden = false; $("touch").hidden = true; viewer.clock.shouldAnimate = false; viewer.targetFrameRate = 10; }
+    else if (state.mode === "pause") { state.mode = "fly"; $("pause").hidden = true; $("touch").hidden = !isTouch; viewer.clock.shouldAnimate = true; viewer.targetFrameRate = FRAME_CAP; last = performance.now(); }
   }
 
   // ---- UI wiring ----------------------------------------------------------------
@@ -1253,7 +1315,7 @@ void main() {
   $("menuBtn").onclick = togglePause;
   const openSettings = () => {
     $("citySource").value = settings.citySource; $("keyInput").value = settings.key; $("qualitySelect").value = settings.quality;
-    $("invertY").checked = settings.invertY; $("showFps").checked = settings.showFps; $("settingsDlg").showModal();
+    $("invertY").checked = settings.invertY; $("showFps").checked = settings.showFps; $("autoRes").checked = settings.autoRes; $("settingsDlg").showModal();
   };
   $("settingsBtn").onclick = openSettings; $("pSettingsBtn").onclick = openSettings;
   $("cityDetail").value = settings.cityDetail; $("modelDetail").value = settings.modelDetail;
@@ -1266,7 +1328,7 @@ void main() {
   $("saveSettings").onclick = () => {
     if ($("citySource").value !== settings.citySource) { store.set("citySource", $("citySource").value); store.set("citySourceChosen", true); }
     store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
-    store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked);
+    store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked); store.set("autoRes", $("autoRes").checked);
     setTimeout(() => location.reload(), 50);
   };
   $("helpBtn").onclick = () => $("helpDlg").showModal(); $("pHelpBtn").onclick = () => $("helpDlg").showModal();
@@ -1278,7 +1340,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";

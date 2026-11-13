@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=22">
+<link rel="stylesheet" href="css/style.css?v=23">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=22"></script>
+<script src="config.js?v=23"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -131,7 +131,7 @@
     <p class="note">Stored only in this browser. Restrict the key in Google Cloud to your site's address and to the Map Tiles API.</p>
     <label class="field">Graphics quality
       <select id="qualitySelect">
-        <option value="low">Low (phones: draws only what is within 2 km)</option>
+        <option value="low">Low (phones: draws only what is within 3 km, 30 FPS)</option>
         <option value="medium">Medium</option>
         <option value="high">High (desktop GPU)</option>
       </select>
@@ -164,6 +164,7 @@
     <p class="note" id="detailInfoSettings"></p>
     <label class="check"><input id="invertY" type="checkbox"> Invert camera up/down</label>
     <label class="check"><input id="showFps" type="checkbox"> Show FPS</label>
+    <label class="check"><input id="autoRes" type="checkbox"> Automatic resolution (renders fewer pixels when the frame rate drops)</label>
     <div class="row"><button value="cancel">Close</button><button id="saveSettings" value="save" class="primary">Save &amp; reload</button></div>
   </form>
 </dialog>
@@ -220,6 +221,6 @@
   </form>
 </dialog>
 
-<script src="js/app.js?v=22"></script>
+<script src="js/app.js?v=23"></script>
 </body>
 </html>
