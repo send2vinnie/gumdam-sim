@@ -1,4 +1,4 @@
-﻿// App-shell cache so the simulator installs and starts like an app on Windows and Android.
+// App-shell cache so the simulator installs and starts like an app on Windows and Android.
 // Google map tiles are never cached here (they are streamed live, per Google's terms).
 const CACHE = "gfs-v3";
 const SHELL = ["./", "index.html", "config.js", "css/style.css", "js/app.js", "manifest.webmanifest",
