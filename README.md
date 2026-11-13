@@ -71,7 +71,7 @@ plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 
 ## Files
 * `models/gundam_rx78_18m.glb` flight model (static pose, rifle and shield in hand, faces +X)
-* `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The arm and body poses come from the original rig, so the hands stay locked on the bar.
+* `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The hands keep one overhand grip on the bar the whole time, and the arms are solved every frame so the forearms stay near vertical under the bar while the elbows travel down and out.
 * `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses
 * `js/app.js` simulator, `config.js` key and locations, `sw.js` + `manifest.webmanifest` app install
