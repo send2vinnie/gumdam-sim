@@ -19,22 +19,30 @@
 
 <!-- Start screen (game hall) -->
 <section id="lobby" class="panel-layer">
-  <div class="lobby-card">
-    <div class="kicker">Nangang Exhibition Center · Taipei</div>
+  <div class="lobby-card" id="lobbyCard">
+    <button id="collapseBtn" class="collapse-btn" type="button" aria-expanded="true" aria-controls="lobbyMoreA lobbyMoreB lobbyMoreC" title="Collapse panel">
+      <span class="chev" aria-hidden="true">▾</span><span class="sr">Collapse panel</span>
+    </button>
+    <div class="more" id="lobbyMoreA"><div><div class="kicker">Nangang Exhibition Center · Taipei</div></div></div>
     <h1>Gundam Flight Simulator</h1>
-    <p class="sub">Fly the RX-78-02 over and between the towers of Tokyo. Everything is true scale: the mobile suit stands 18.0 m, pilots 1.75 m, buildings are Google's real 3D city.</p>
-    <label class="field">Starting point in Tokyo
-      <select id="spawnSelect"></select>
-    </label>
+    <div class="more" id="lobbyMoreB"><div>
+      <p class="sub">Fly the RX-78-02 over and between the towers of Tokyo. Everything is true scale: the mobile suit stands 18.0 m, pilots 1.75 m, buildings are Google's real 3D city.</p>
+      <label class="field">Starting point in Tokyo
+        <select id="spawnSelect"></select>
+      </label>
+    </div></div>
     <button id="startBtn" class="primary">Launch</button>
-    <div class="row">
-      <button id="settingsBtn">Settings</button>
-      <button id="helpBtn">Controls</button>
-      <button id="creditsBtn">Credits</button>
-    </div>
-    <div id="scaleCard" class="scale-card"></div>
+    <div class="more" id="lobbyMoreC"><div>
+      <div class="row">
+        <button id="settingsBtn">Settings</button>
+        <button id="helpBtn">Controls</button>
+        <button id="creditsBtn">Credits</button>
+      </div>
+      <div id="scaleCard" class="scale-card"></div>
+    </div></div>
     <div id="status" class="status"></div>
   </div>
+  <button id="showMenuBtn" class="show-menu" type="button" hidden>☰ Show menu</button>
 </section>
 
 <!-- In-flight HUD -->

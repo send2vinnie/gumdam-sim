@@ -374,6 +374,34 @@
   canvas.addEventListener("wheel", (e) => { look.zoom = Math.max(0.35, Math.min(4, look.zoom * (e.deltaY > 0 ? 1.1 : 0.9))); e.preventDefault(); }, { passive: false });
   canvas.addEventListener("dblclick", () => { look.yaw = 0; look.pitch = 0; look.zoom = 1; });
 
+  // start-screen panel: collapse to a pill, or hide it by tapping the 3D view
+  function setLobbyCollapsed(c) {
+    $("lobbyCard").classList.toggle("collapsed", c);
+    const b = $("collapseBtn");
+    b.setAttribute("aria-expanded", String(!c));
+    b.title = c ? "Expand panel" : "Collapse panel";
+    b.querySelector(".sr").textContent = b.title;
+    store.set("lobbyCollapsed", c);
+  }
+  function setLobbyPanelOff(off) {
+    $("lobby").classList.toggle("panel-off", off);
+    $("showMenuBtn").hidden = !off;
+  }
+  setLobbyCollapsed(store.get("lobbyCollapsed", isTouch));
+  $("collapseBtn").onclick = () => setLobbyCollapsed(!$("lobbyCard").classList.contains("collapsed"));
+  $("showMenuBtn").onclick = () => { setLobbyCollapsed(true); setLobbyPanelOff(false); };
+  let tap = null;
+  canvas.addEventListener("pointerdown", (e) => { tap = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() }; });
+  canvas.addEventListener("pointerup", (e) => {
+    const t = tap; tap = null;
+    if (!t || t.id !== e.pointerId || state.mode !== "lobby" || $("lobby").hidden) return;
+    // only a quick tap with little movement counts; dragging to look around does not
+    if (Math.hypot(e.clientX - t.x, e.clientY - t.y) > 8 || performance.now() - t.t > 350) return;
+    const off = !$("lobby").classList.contains("panel-off");
+    if (!off) setLobbyCollapsed(true);
+    setLobbyPanelOff(off);
+  });
+
   // virtual sticks
   const sticks = {};
   function setupStick(id) {
