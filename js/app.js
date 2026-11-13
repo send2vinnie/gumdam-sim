@@ -37,8 +37,9 @@
   const MS_HEIGHT = 18.0;          // RX-78-02 head height (m)
   const MS_CENTER = 9.0;           // pivot for lean/bank (m above feet)
   const PILOT_HEIGHT = 1.75;
-  const BAR_HEIGHT = 22.07;        // from the pull-up rig (hands on bar, feet 0.6 m off ground at full hang)
-  const BAR_FORWARD = -0.35;       // bar offset along the Gundam's facing axis
+  const BAR_HEIGHT = 22.18;        // centre of the closed fists in the pull-up rig (feet 0.6 m off the ground at full hang)
+  const BAR_FORWARD = 0.21;        // bar offset along the Gundam's facing axis (the fists close around it)
+  const BAR_RADIUS = 0.20;         // round bar the fingers wrap around
   const BAR_LENGTH = 13.0;
   const POST_SPAN = 6.2;           // half distance between the two posts
 
@@ -114,7 +115,23 @@
   viewer.clock.multiplier = 1;
   // early afternoon local time (UTC+8 Taipei / UTC+9 Tokyo) for good sun on the city
   viewer.clock.currentTime = C.JulianDate.fromIso8601("2026-05-02T05:00:00Z");
-  if (viewer.shadowMap) { viewer.shadowMap.maximumDistance = 600; viewer.shadowMap.softShadows = true; }
+  if (viewer.shadowMap) { viewer.shadowMap.maximumDistance = 600; viewer.shadowMap.softShadows = true; viewer.shadowMap.darkness = 0.55; }
+
+  // ---- lighting: fill the shadow sides ------------------------------------------
+  // Cesium's default sky light leaves walls facing away from the sun nearly black. A bright, even sky fill
+  // (spherical harmonics, constant term only) lifts them while sunlit walls keep the normal sun.
+  const SKY_FILL = [new C.Cartesian3(1.60, 1.63, 1.72)].concat(Array.from({ length: 8 }, () => new C.Cartesian3(0, 0, 0)));
+  const skyLight = () => new C.ImageBasedLighting({ sphericalHarmonicCoefficients: SKY_FILL, imageBasedLightingFactor: new C.Cartesian2(1.0, 0.6) });
+  // extruded OSM buildings: same idea, as a small shader (ambient floor + sun term)
+  const OSM_FS = `
+in vec3 v_positionEC;
+in vec3 v_normalEC;
+in vec4 v_color;
+void main() {
+  vec3 n = normalize(v_normalEC);
+  float sun = max(dot(n, czm_lightDirectionEC), 0.0);
+  out_FragColor = vec4(min(v_color.rgb * (0.78 + 0.32 * sun), vec3(1.0)), v_color.a);
+}`;
 
   // City source: "google" (Photorealistic 3D Tiles, online, needs a key) or "local" (bundled PLATEAU Tokyo + OSM Nangang)
   const CITY_SOURCES = { local: "Local (offline): PLATEAU Tokyo + OSM Nangang", google: "Google Photorealistic (online, needs API key)" };
@@ -136,6 +153,7 @@
             maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
             cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
             showCreditsOnScreen: true,
+            imageBasedLighting: skyLight(),
             dynamicScreenSpaceError: true,
             preferLeaves: false
           });
@@ -223,6 +241,7 @@
         maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
         cacheBytes: lowMem ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
         dynamicScreenSpaceError: true,
+        imageBasedLighting: skyLight(),
         shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
       });
       scene.primitives.add(ts); tilesets.push(ts);
@@ -242,7 +261,7 @@
         }));
       } catch (e) { /* skip a malformed footprint */ }
     }
-    scene.primitives.add(new C.Primitive({ geometryInstances: instances, appearance: new C.PerInstanceColorAppearance({ translucent: false }), shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED }));
+    scene.primitives.add(new C.Primitive({ geometryInstances: instances, appearance: new C.PerInstanceColorAppearance({ translucent: false, fragmentShaderSource: OSM_FS }), shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED }));
     for (const txt of [LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
     localWorld = { ground, osm };
   }
@@ -294,7 +313,8 @@
     const model = await C.Model.fromGltfAsync(Object.assign({
       url, modelMatrix: matrix, scale: 1.0, forwardAxis: C.Axis.X, upAxis: C.Axis.Y, minimumPixelSize: 0, maximumScale: 1.0,
       shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED,
-      backFaceCulling: false
+      backFaceCulling: false,
+      imageBasedLighting: skyLight()
     }, opts || {}));
     scene.primitives.add(model);
     return model;
@@ -430,8 +450,10 @@
         box: { dimensions: new C.Cartesian3(4.0, 3.0, 0.6), material: yellow } }));
     }
     const bc = at(BAR_FORWARD, 0);
-    lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(bc.lon, bc.lat, lobby.ground + BAR_HEIGHT), orientation: orient(bc, lobby.ground + BAR_HEIGHT),
-      box: { dimensions: new C.Cartesian3(0.7, BAR_LENGTH + 1.0, 0.7), material: new C.ColorMaterialProperty(C.Color.fromCssColorString("#9aa3ad")) } }));
+    // round bar: a cylinder's axis is its local Z, so roll it 90 degrees to lie along the bar direction
+    lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(bc.lon, bc.lat, lobby.ground + BAR_HEIGHT),
+      orientation: C.Transforms.headingPitchRollQuaternion(C.Cartesian3.fromDegrees(bc.lon, bc.lat, lobby.ground + BAR_HEIGHT), new C.HeadingPitchRoll((H - 90) * DEG, 0, Math.PI / 2)),
+      cylinder: { length: BAR_LENGTH + 1.0, topRadius: BAR_RADIUS, bottomRadius: BAR_RADIUS, slices: 24, material: new C.ColorMaterialProperty(C.Color.fromCssColorString("#9aa3ad")) } }));
     // safety mat under the Gundam
     const mc = at(0, 0);
     lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(mc.lon, mc.lat, lobby.ground + 0.08), orientation: orient(mc, lobby.ground + 0.08),
