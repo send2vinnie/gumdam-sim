@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=26">
+<link rel="stylesheet" href="css/style.css?v=27">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=26"></script>
+<script src="config.js?v=27"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -165,6 +165,7 @@
     <p class="note" id="detailInfoSettings"></p>
     <label class="check"><input id="invertY" type="checkbox"> Invert camera up/down</label>
     <label class="check"><input id="showFps" type="checkbox"> Show FPS</label>
+    <label class="check"><input id="camShake" type="checkbox"> Camera shake (a slight nudge on nearby hits and footsteps)</label>
     <label class="check"><input id="autoRes" type="checkbox"> Automatic resolution (renders fewer pixels when the frame rate drops)</label>
     <div class="row"><button value="cancel">Close</button><button id="saveSettings" value="save" class="primary">Save &amp; reload</button></div>
   </form>
@@ -222,6 +223,6 @@
   </form>
 </dialog>
 
-<script src="js/app.js?v=26"></script>
+<script src="js/app.js?v=27"></script>
 </body>
 </html>
