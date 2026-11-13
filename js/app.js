@@ -89,7 +89,7 @@
     invertY: store.get("invertY", false),
     showFps: store.get("showFps", false),
     autoRes: store.get("autoRes", true),
-    camShake: store.get("camShake", true)
+    camShake: store.get("impactShake", false)   // off by default (new key, so an older saved "on" does not carry over)
   };
   // 3D detail: chosen live in Settings. Until the user picks, the defaults follow the graphics quality.
   const CITY_SSE = { verylow: 64, low: 32, medium: 16, high: 8, ultra: 4 };
@@ -1202,7 +1202,7 @@ void main() {
     burst(pos, { inner: "rgba(120,120,120,0.9)", outer: "rgba(70,70,70,0.6)", c0: "rgba(110,105,100,0.8)", c1: "rgba(60,60,60,0)", n: 26 * k, v0: 3, v1: 9, life: 2.6, px: 10 * k, s0: 1, s1: 4, radius: 3 * k });
     burst(pos, { inner: "rgba(60,55,50,1)", outer: "rgba(40,35,30,1)", c0: "#4a443d", c1: "rgba(40,35,30,0)", n: 30 * k, v0: 10, v1: 30, life: 2.2, px: 1.2, s0: 1, s1: 1, radius: 1, gravity: 9.8 });
     flash(pos, "rgba(255,240,200,0.95)", 90 * k, 0.18);
-    const d = C.Cartesian3.distance(camera.positionWC, pos); shake = Math.max(shake, Math.min(big ? 0.8 : 0.6, (big ? 60 : 30) / Math.max(30, d)));   // capped: your own hits nearby only nudge the view
+    if (settings.camShake) { const d = C.Cartesian3.distance(camera.positionWC, pos); shake = Math.max(shake, Math.min(big ? 0.8 : 0.6, (big ? 60 : 30) / Math.max(30, d))); }   // only with "Camera shake" on (off by default): the view stays still on impacts
   }
   function collapse(pos) { // dust cloud and falling debris where a building came down
     burst(pos, { inner: "rgba(200,190,170,0.9)", outer: "rgba(150,140,125,0.6)", c0: "rgba(190,180,160,0.85)", c1: "rgba(150,140,125,0)", n: 60, v0: 2, v1: 8, life: 4.5, px: 18, s0: 1, s1: 5, radius: 15 });
@@ -1282,7 +1282,6 @@ void main() {
       s.line = beamLines.add({ positions: [from, from], width: 16, material: C.Material.fromType("PolylineGlow", { color: C.Color.fromCssColorString("#ff8ae0"), glowPower: 0.45, taperPower: 0.5 }) });
       s.point = glowPoints.add({ position: from, color: C.Color.fromCssColorString("#fff0fb"), pixelSize: 12, outlineColor: C.Color.fromCssColorString("rgba(255,110,220,0.8)"), outlineWidth: 5 });
       flash(from, "rgba(255,200,240,0.95)", 46, 0.08);   // muzzle flash
-      fly.vf -= 4;                                          // recoil
     }
     shots.push(s);
   }
@@ -1327,9 +1326,9 @@ void main() {
     }
   }
   function applyShake(dt) {
-    if (shake <= 0.001) return;
+    if (shake <= 0.001 || !settings.camShake) { shake = 0; return; }
     // a small jitter in yaw and pitch only (no roll): at most about 0.3 deg, fading in about half a second
-    if (settings.camShake) { const a = shake * 0.0105; camera.lookRight((Math.random() - 0.5) * a); camera.lookUp((Math.random() - 0.5) * a); }
+    const a = shake * 0.0105; camera.lookRight((Math.random() - 0.5) * a); camera.lookUp((Math.random() - 0.5) * a);
     shake *= Math.exp(-dt * 10);
   }
   // fire animations
@@ -1440,7 +1439,7 @@ void main() {
   $("saveSettings").onclick = () => {
     if ($("citySource").value !== settings.citySource) { store.set("citySource", $("citySource").value); store.set("citySourceChosen", true); }
     store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
-    store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked); store.set("autoRes", $("autoRes").checked); store.set("camShake", $("camShake").checked);
+    store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked); store.set("autoRes", $("autoRes").checked); store.set("impactShake", $("camShake").checked);
     setTimeout(() => location.reload(), 50);
   };
   $("helpBtn").onclick = () => $("helpDlg").showModal(); $("pHelpBtn").onclick = () => $("helpDlg").showModal();
@@ -1452,7 +1451,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";

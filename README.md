@@ -127,9 +127,10 @@ Aim with the crosshair in the middle of the screen and fire (F, left click, game
   below it), so it bursts on the first wall, roof or ground it meets, even if the aim ray at firing time missed it (the
   fireball leaves the dragon's mouth, not the camera; tiles may load after firing). A shot that hits nothing bursts in the
   air at the end of its range, and so does the oldest shot when too many are in the air.
-* **Hits** explode with fire, smoke, flying debris and a flash, and nudge the camera slightly when close (at most about
-  0.3°, no roll, fading in half a second; "Camera shake" in Settings turns it off). The camera follows only the body's heading
-  and position, never the arm raise or the head rear-back, and the ground and camera checks ignore your own shots and smoke.
+* **Hits** explode with fire, smoke, flying debris and a flash. The camera stays still on impacts: no shake by default
+  ("Camera shake" in Settings adds a slight nudge on nearby hits, at most about 0.3°, no roll), and firing does not push
+  the Gundam back. The camera follows only the body's heading and position, never the arm raise or the head rear-back,
+  and the ground and camera-collision checks ignore your own shots, explosions, smoke and debris.
 * **Buildings come down:** in the Local city the building you hit disappears in a dust cloud with falling debris (PLATEAU
   buildings in Tokyo and the OSM buildings in Nangang; it stays down when its tiles reload). In Google mode the city is one big
   mesh, so a building-sized hole (about 32 m) is cut out instead, up to 12 at a time; this only changes what is drawn and stores
