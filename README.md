@@ -59,8 +59,10 @@ sets the defaults the first time the game runs, and still needs *Save & reload*.
 ## Characters
 Pick one on the start screen (**Character**), remembered between visits.
 * **Gundam RX-78-02**, true scale (18.0 m head height).
-* **Dragon with rider**: the dragon is shown at a **rideable 4 m** rather than its official 1.7 m, with a 1.75 m rider seated on
-  its back. Change `DRAGON_HEIGHT_M` in `js/app.js` to resize it; the rider stays 1.75 m and its seat scales with the dragon.
+* **Dragon with rider**: the dragon is shown at a **rideable 4 m** rather than its official 1.7 m. A 1.75 m rider sits astride
+  its lower neck, leaning forward with both hands on its horns; the rider is skinned to the dragon's joints, so the hands stay on
+  the horns when the head turns. To use another dragon size, change `DRAGON_HEIGHT_M` in `js/app.js` and rebuild the model with
+  `node tools/build_dragon_rider.js <dragon folder> <trainer folder> models/dragon.glb <height>` so the rider stays 1.75 m.
 
 In flight both characters bank into turns, lean with speed and pitch back when climbing / forward when diving, and turn their
 heads into the turn (up to 30°). The dragon also beats its wings (slowly when cruising, faster and deeper on boost, folded
@@ -86,7 +88,7 @@ plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 * `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The fists stay closed around a round bar in one overhand grip the whole time (the finger curl is baked into the mesh, so no extra joints are needed on phones), and the arms are solved every frame so the forearms stay near vertical under the bar while the elbows travel down and out.
 * `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses
-* `models/dragon.glb` dragon in flight attitude with a 5-joint rig (body, head, wings, tail); `models/rider.glb` seated rider
+* `models/dragon.glb` dragon in flight attitude with a 5-joint rig (body, head, wings, tail) and its rider (built by `tools/build_dragon_rider.js`)
 * `js/app.js` simulator, `config.js` key and locations, `sw.js` + `manifest.webmanifest` app install
 
 ## Credits

@@ -38,14 +38,14 @@
   const MS_CENTER = 9.0;           // pivot for lean/bank (m above feet)
 
   // ---- characters ---------------------------------------------------------------
-  // Dragon: shown at a rideable size instead of its official 1.7 m. Change this one number to resize it;
-  // the rider stays 1.75 m and its seat moves with the dragon.
+  // Dragon: shown at a rideable size instead of its official 1.7 m. The rider is built into models/dragon.glb (skinned
+  // to the dragon so its hands stay on the horns), sized 1.75 m for this dragon height: after changing DRAGON_HEIGHT_M,
+  // rebuild the model with tools/build_dragon_rider.js <height> so the rider stays 1.75 m.
   const DRAGON_HEIGHT_M = 4.0;
   const DRAGON_NATIVE_H = 18.16;   // standing height (horn tips) in dragon.glb units
   const DRAGON_SCALE = DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
-  const RIDER_HEIGHT_M = 1.75, RIDER_NATIVE_H = 17.62;
-  const RIDER_SCALE = RIDER_HEIGHT_M / RIDER_NATIVE_H;
-  const DRAGON_SEAT = [1.45, 10.42, 0];    // top of the back between the wings, dragon.glb flight frame (X fwd, Y up, Z right)
+  const RIDER_HEIGHT_M = 1.75;
+  const RIDER_EYE = [7.25, 12.97];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
   const D_PITCH = 55 * DEG;                // body pitch baked into dragon.glb (native joints are in the upright frame)
   const DRAGON_JOINTS = {
     head: { p: [0, -3.0, 12.8], rest: -45 * DEG }, tail: { p: [0, 2.6, 4.5], rest: -52 * DEG },
@@ -55,8 +55,7 @@
   const D_FWD = [0, -Math.cos(D_PITCH), Math.sin(D_PITCH)];   // flight "forward" in the native frame (wing-beat axis)
   const CHARACTERS = {
     gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45] },
-    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, center: 6.0 * DRAGON_SCALE, eye: DRAGON_SEAT[1] * DRAGON_SCALE + 0.95 * RIDER_HEIGHT_M * 0.62,
-      eyeFwd: DRAGON_SEAT[0] * DRAGON_SCALE + 0.1, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M] }
+    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, center: 6.0 * DRAGON_SCALE, eye: RIDER_EYE[1] * DRAGON_SCALE, eyeFwd: RIDER_EYE[0] * DRAGON_SCALE + 0.15, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M] }
   };
   const PILOT_HEIGHT = 1.75;
   const BAR_HEIGHT = 22.18;        // centre of the closed fists in the pull-up rig (feet 0.6 m off the ground at full hang)
@@ -707,8 +706,7 @@ void main() {
     if (fly.rider) { scene.primitives.remove(fly.rider); fly.rider = null; }
     fly.character = ch; fly.headYaw = fly.headPitch = 0; fly.wingPhase = 0;
     if (ch === "dragon") {
-      fly.model = await loadModel("models/dragon.glb", C.Matrix4.IDENTITY, { scale: DRAGON_SCALE, maximumScale: undefined });
-      fly.rider = await loadModel("models/rider.glb", C.Matrix4.IDENTITY, { scale: RIDER_SCALE, maximumScale: undefined });
+      fly.model = await loadModel("models/dragon.glb", C.Matrix4.IDENTITY, { scale: DRAGON_SCALE, maximumScale: undefined }); // rider included
     } else {
       const lvl = settings.modelDetail;
       fly.model = await loadModel(modelUrl("flight"), C.Matrix4.IDENTITY);
@@ -805,12 +803,8 @@ void main() {
         fly.wingPhase = ((fly.wingPhase || 0) + dt * beat * 2 * Math.PI) % (2 * Math.PI);
         const amp = (fly.grounded ? 4 : input.boost ? 34 : 22) * DEG;
         fly.wingAmp = (fly.wingAmp || amp) + (amp - (fly.wingAmp || amp)) * (1 - Math.exp(-dt * 3));
-        poseDragon(fly.model, fly.headYaw, fly.headPitch, fly.wingAmp * Math.sin(fly.wingPhase) + (fly.grounded ? 25 * DEG : 0), -fly.headYaw * 0.6);
-        if (fly.rider) {
-          fly.rider.modelMatrix = C.Matrix4.multiply(fly.model.modelMatrix,
-            C.Matrix4.fromTranslation(new C.Cartesian3(DRAGON_SEAT[0] * DRAGON_SCALE, -DRAGON_SEAT[2] * DRAGON_SCALE, DRAGON_SEAT[1] * DRAGON_SCALE)), new C.Matrix4());
-          fly.rider.show = CAMS[fly.cam].range !== 0;
-        }
+        // the rider sits on the neck holding the horns, so the head turns a little less than the Gundam's
+        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7, fly.wingAmp * Math.sin(fly.wingPhase) + (fly.grounded ? 25 * DEG : 0), -fly.headYaw * 0.6);
       } else poseHead(fly.model, fly.headYaw, fly.headPitch);
     }
     fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
