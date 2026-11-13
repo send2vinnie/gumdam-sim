@@ -1,7 +1,7 @@
 /* Gundam Flight Simulator — CesiumJS + Google Photorealistic 3D Tiles.
  * All distances are metres. Models are authored at true scale:
  *   gundam_rx78_18m.glb         static flight model, 18.0 m head height, feet at origin, faces +X
- *   gundam_rx78_pullup_18m.glb  skinned model with a 4 s "PullUp" loop, same scale
+ *   gundam_rx78_pullup_18m.glb  skinned model with a 14.7 s "PullUp" loop (3 reps), same scale
  *   pilot_*.glb                 1.75 m pilots, faces +X
  * Models are added with scale 1 and minimumPixelSize 0, so nothing is ever enlarged on screen.
  */
