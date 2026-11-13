@@ -130,3 +130,9 @@ dialog a { color: var(--accent); }
   background: rgba(10, 18, 36, .72); color: var(--text); border: 1px solid rgba(242, 196, 40, .6); border-radius: 999px; padding: 6px 14px; font-size: 13px; white-space: nowrap; }
 .pick-label[hidden] { display: none; }
 @media (max-width: 700px) { .pick-label { top: auto; bottom: calc(150px + env(safe-area-inset-bottom)); font-size: 12px; } }
+.crosshair { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; pointer-events: none;
+  background: radial-gradient(circle, var(--hud) 0 2px, transparent 3px), linear-gradient(var(--hud), var(--hud)) center / 2px 9px no-repeat, linear-gradient(90deg, var(--hud), var(--hud)) center / 9px 2px no-repeat;
+  border: 2px solid rgba(125,255,176,.75); border-radius: 50%; opacity: .85; }
+.fire-btn { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(40px + env(safe-area-inset-bottom)); background: rgba(240,120,30,.6); }
+.fire-btn.on { background: rgba(255,170,60,.95); }
+#rebuildBtn { width: 100%; margin-top: 8px; }

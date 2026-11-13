@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=17">
+<link rel="stylesheet" href="css/style.css?v=18">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=17"></script>
+<script src="config.js?v=18"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -71,6 +71,7 @@
   <div class="hud-bottom">
     <span id="hudMode">HOVER</span> · <span id="hudCam">CHASE CAM</span> · <span id="hudLoc"></span> <span id="hudFps"></span>
   </div>
+  <div id="crosshair" class="crosshair" aria-hidden="true"></div>
   <div id="impact" class="impact">IMPACT</div>
   <div id="loadingTiles" class="loading-tiles">Loading city…</div>
   <button id="menuBtn" class="hud-btn" title="Menu (Esc)">☰</button>
@@ -82,6 +83,7 @@
   <div class="stick" id="stickL"><div class="knob"></div><span>MOVE / TURN</span></div>
   <div class="stick" id="stickR"><div class="knob"></div><span>UP·DOWN / STRAFE</span></div>
   <button id="boostBtn" class="touch-btn">BOOST</button>
+  <button id="fireBtn" class="touch-btn fire-btn">FIRE</button>
 </section>
 
 <!-- Pause menu -->
@@ -98,6 +100,7 @@
       <button id="pHelpBtn">Controls</button>
       <button id="toLobbyBtn">Start screen</button>
     </div>
+    <button id="rebuildBtn">Rebuild city</button>
     <p class="note" id="detailInfoPause"></p>
   </div>
 </section>
@@ -160,6 +163,7 @@
           <li><b>Q / E</b> strafe left / right</li>
           <li><b>Space</b> ascend · <b>C</b> descend</li>
           <li><b>Shift</b> boost</li>
+          <li><b>F</b> or <b>left click</b> fire (Gundam: beam rifle · dragon: fireball)</li>
           <li><b>V</b> camera · mouse drag to look · wheel to zoom</li>
           <li><b>Esc</b> pause menu</li>
         </ul></div>
@@ -169,12 +173,13 @@
           <li>Right stick: turn / look up-down</li>
           <li>RT ascend · LT descend</li>
           <li>A (hold) boost · Y camera · Start pause</li>
+          <li>RB or X fire</li>
         </ul></div>
       <div><h3>Touch (Android)</h3>
         <ul>
           <li>Left stick: forward/back and turn</li>
           <li>Right stick: up/down and strafe</li>
-          <li>BOOST (hold) · ◎ camera · ☰ menu</li>
+          <li>BOOST (hold) · FIRE · ◎ camera · ☰ menu</li>
           <li>Drag empty screen to look around</li>
         </ul></div>
     </div>
@@ -198,6 +203,6 @@
   </form>
 </dialog>
 
-<script src="js/app.js?v=17"></script>
+<script src="js/app.js?v=18"></script>
 </body>
 </html>

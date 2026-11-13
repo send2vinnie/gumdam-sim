@@ -267,6 +267,7 @@ void main() {
         imageBasedLighting: skyLight(),
         shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
       });
+      ts.tileLoad.addEventListener((tile) => reapplyHidden(tile));   // destroyed buildings stay destroyed when tiles reload
       scene.primitives.add(ts); tilesets.push(ts);
     }
     const osm = await (await fetch("cities/taipei/nangang-buildings.geojson")).json();
@@ -280,13 +281,14 @@ void main() {
             polygonHierarchy: new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray(ring.flat()), holes),
             height: f.properties.mh || 0, extrudedHeight: f.properties.h, vertexFormat: C.PerInstanceColorAppearance.VERTEX_FORMAT
           }),
-          attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString("#b9b6ae")) }
+          id: "osm-" + instances.length,
+          attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString("#b9b6ae")), show: new C.ShowGeometryInstanceAttribute(true) }
         }));
       } catch (e) { /* skip a malformed footprint */ }
     }
-    scene.primitives.add(new C.Primitive({ geometryInstances: instances, appearance: new C.PerInstanceColorAppearance({ translucent: false, fragmentShaderSource: OSM_FS }), shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED }));
+    const osmPrimitive = scene.primitives.add(new C.Primitive({ geometryInstances: instances, appearance: new C.PerInstanceColorAppearance({ translucent: false, fragmentShaderSource: OSM_FS }), shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED }));
     for (const txt of [LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
-    localWorld = { ground, osm };
+    localWorld = { ground, osm, osmPrimitive };
   }
 
   // open, level ground near a point from the OSM footprints: the nearest grid point at least 25 m from every building
@@ -657,6 +659,7 @@ void main() {
     if (e.code === "Space") e.preventDefault();
     if (state.mode === "fly") {
       if (e.code === "KeyV") cycleCamera();
+      if (e.code === "KeyF" && !e.repeat) requestFire();
       if (e.code === "Escape") togglePause();
     } else if (state.mode === "pause" && e.code === "Escape") togglePause();
   });
@@ -708,6 +711,8 @@ void main() {
   });
   canvas.addEventListener("pointerup", (e) => {
     const t = tap; tap = null;
+    if (t && t.id === e.pointerId && state.mode === "fly" && e.pointerType === "mouse" && e.button === 0 &&
+        Math.max(t.moved, Math.hypot(e.clientX - t.x, e.clientY - t.y)) <= 6 && e.timeStamp - t.t < 400) { requestFire(); return; }
     if (!t || t.id !== e.pointerId || state.mode !== "lobby" || $("lobby").hidden) return;
     // only a quick tap with little movement counts; dragging to look around does not.
     // Event timestamps are used so a busy phone (frames still rendering) doesn't turn a quick tap into a "long press".
@@ -752,7 +757,7 @@ void main() {
     let fwd = (k("KeyW") || k("ArrowUp") ? 1 : 0) - (k("KeyS") || k("ArrowDown") ? 1 : 0);
     let turn = (k("KeyD") || k("ArrowRight") ? 1 : 0) - (k("KeyA") || k("ArrowLeft") ? 1 : 0);
     let strafe = (k("KeyE") ? 1 : 0) - (k("KeyQ") ? 1 : 0);
-    let vert = (k("Space") || k("KeyR") ? 1 : 0) - (k("KeyC") || k("KeyF") ? 1 : 0);
+    let vert = (k("Space") || k("KeyR") ? 1 : 0) - (k("KeyC") ? 1 : 0);
     let boost = k("ShiftLeft") || k("ShiftRight");
     let lookX = 0, lookY = 0;
     const L = sticks.stickL, Rr = sticks.stickR;
@@ -769,6 +774,7 @@ void main() {
       if (b[12] && b[12].pressed) vert += 1; if (b[13] && b[13].pressed) vert -= 1;
       const pressed = (i) => b[i] && b[i].pressed && !padPrev[gp.index + ":" + i];
       if (state.mode === "fly" && pressed(3)) cycleCamera();
+      if (state.mode === "fly" && (pressed(5) || pressed(2))) requestFire();
       if (pressed(9)) togglePause();
       const now = {}; b.forEach((x, i) => { if (x.pressed) now[gp.index + ":" + i] = 1; });
       for (const kk in padPrev) if (kk.startsWith(gp.index + ":")) delete padPrev[kk];
@@ -890,8 +896,14 @@ void main() {
         const amp = (fly.grounded ? 4 : input.boost ? 34 : 22) * DEG;
         fly.wingAmp = (fly.wingAmp || amp) + (amp - (fly.wingAmp || amp)) * (1 - Math.exp(-dt * 3));
         // the rider sits on the neck holding the horns, so the head turns a little less than the Gundam's
-        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7, fly.wingAmp * Math.sin(fly.wingPhase) + (fly.grounded ? 25 * DEG : 0), -fly.headYaw * 0.6);
-      } else poseHead(fly.model, fly.headYaw, fly.headPitch);
+        const fa = dragonFireAnim();
+        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7 + fa[0], fly.wingAmp * Math.sin(fly.wingPhase) + (fly.grounded ? 25 * DEG : 0) + fa[1], -fly.headYaw * 0.6);
+      } else {
+        // while aiming, the head looks along the line of fire
+        const aiming = fly.fireT !== undefined && fly.fireT < 1.4;
+        poseHead(fly.model, aiming ? fly.headYaw * 0.3 : fly.headYaw, aiming ? Math.max(-25 * DEG, Math.min(25 * DEG, (fly.aimPitch || 0) + fly.lean)) : fly.headPitch);
+        poseGundamArm(dt);
+      }
     }
     fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
     if (fly.pendingModel && fly.model) { fly.pendingModel.modelMatrix = fly.model.modelMatrix; fly.pendingModel.show = fly.model.show; }
@@ -925,7 +937,8 @@ void main() {
       return;
     }
     // chase / far / side distances suit the character's size
-    const lift = ch.center + ch.height * 0.11;
+    // the camera looks just above the character, so the crosshair (screen centre) and the line of fire clear its head
+    const lift = ch.center + ch.height * (fly.cam === 2 ? 0.11 : 0.62);
     const target = C.Cartesian3.fromDegrees(fly.lon, fly.lat, fly.h + lift);
     const baseRange = fly.cam === 0 ? ch.cams[0] : fly.cam === 1 ? ch.cams[1] : ch.cams[2];
     let range = baseRange * look.zoom;
@@ -953,14 +966,192 @@ void main() {
     tape.style.left = (w / 2 - 15 - (360 + fly.az) / 15 * 30) + "px";
   }
 
+  // ---- weapons: beam rifle (Gundam) and fireball (dragon); destructible buildings ----------------------
+  // One ray per shot (from the crosshair) finds what it will hit; the projectile then just flies there, so firing stays cheap.
+  const WEAPONS = { gundam: { speed: 600, range: 1600, cooldown: 0.35 }, dragon: { speed: 80, range: 800, cooldown: 0.9 } };
+  const MAX_SHOTS = 6, MAX_FX = 10, MAX_CLIPS = 12;
+  const ARM_PIVOT = [-6.4, 38.6, -0.9], MUZZLE = [0.01, -36.79, 1.38];             // gundam_rx78_18m*.glb: armR node (model units)
+  const BODY_T = [-0.23696897, 0, 0], BODY_S = 0.3889163389802798;                   // body node transform (rotation +90 deg about Y)
+  const DRAGON_MOUTH = [12.23, 8.22, 0.22];                                         // dragon.glb flight frame (dragon units)
+  const shots = [], effects = [];
+  const hiddenFeatures = new Map();   // tile content url -> Set(featureId) of destroyed PLATEAU buildings
+  const hiddenOsm = new Set();
+  let fireCooldown = 0, shake = 0, clipCount = 0;
+  const beamLines = scene.primitives.add(new C.PolylineCollection());
+  const glowPoints = scene.primitives.add(new C.PointPrimitiveCollection());
+  const sprite = (() => { const cache = {}; return (inner, outer) => { const k = inner + outer; if (cache[k]) return cache[k];
+    const cv = document.createElement("canvas"); cv.width = cv.height = 64; const g = cv.getContext("2d"); const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, inner); gr.addColorStop(0.45, outer); gr.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return (cache[k] = cv); }; })();
+  // model-space (Cesium: X fwd, Y left, Z up, metres) -> world, through the character's current model matrix
+  const toWorld = (m, p) => C.Matrix4.multiplyByPoint(m, new C.Cartesian3(p[0], p[1], p[2]), new C.Cartesian3());
+  function gundamMuzzleWorld(armAngle) {
+    // arm node local (x left, y up, z fwd) -> rotate about x at the shoulder -> body node -> glTF -> Cesium model space
+    const c = Math.cos(armAngle), s = Math.sin(armAngle), m = MUZZLE;
+    const a = [m[0] + ARM_PIVOT[0], m[1] * c - m[2] * s + ARM_PIVOT[1], m[1] * s + m[2] * c + ARM_PIVOT[2]];
+    const g = [BODY_T[0] + BODY_S * a[2], BODY_T[1] + BODY_S * a[1], BODY_T[2] - BODY_S * a[0]];   // Ry(+90): (x,y,z) -> (z, y, -x)
+    return toWorld(fly.model.modelMatrix, [g[0], -g[2], g[1]]);                                 // glTF Y-up -> Cesium Z-up
+  }
+  function dragonMouthWorld() { const s = DRAGON_SCALE, m = DRAGON_MOUTH; return toWorld(fly.model.modelMatrix, [m[0] * s, -m[2] * s, m[1] * s]); }
+  function addEffect(sys, life) { scene.primitives.add(sys); effects.push({ sys, t: 0, life }); while (effects.length > MAX_FX) { const e = effects.shift(); scene.primitives.remove(e.sys); } }
+  function burst(pos, o) {
+    const gravity = o.gravity || 0, sc = new C.Cartesian3();
+    addEffect(new C.ParticleSystem({
+      image: sprite(o.inner, o.outer), modelMatrix: C.Transforms.eastNorthUpToFixedFrame(pos), emitter: new C.SphereEmitter(o.radius || 2),
+      startColor: C.Color.fromCssColorString(o.c0), endColor: C.Color.fromCssColorString(o.c1), startScale: o.s0 || 1, endScale: o.s1 || 3,
+      minimumParticleLife: o.life * 0.6, maximumParticleLife: o.life, minimumSpeed: o.v0, maximumSpeed: o.v1, imageSize: new C.Cartesian2(o.px, o.px),
+      emissionRate: 0, bursts: [new C.ParticleBurst({ time: 0, minimum: o.n, maximum: o.n })], lifetime: 60, loop: false, sizeInMeters: true,   // one burst; removed by updateEffects
+      updateCallback: gravity ? (p, dt) => { C.Cartesian3.normalize(p.position, sc); C.Cartesian3.multiplyByScalar(sc, -gravity * dt, sc); C.Cartesian3.add(p.velocity, sc, p.velocity); } : undefined
+    }), o.life + 0.3);
+  }
+  function flash(pos, color, size, life) { const pt = glowPoints.add({ position: pos, color: C.Color.fromCssColorString(color), pixelSize: size, outlineWidth: 0, disableDepthTestDistance: 0 });
+    effects.push({ point: pt, t: 0, life, size }); }
+  function explode(pos, big) {
+    const k = big ? 1.6 : 1;
+    burst(pos, { inner: "rgba(255,255,230,1)", outer: "rgba(255,150,30,1)", c0: "rgba(255,215,130,1)", c1: "rgba(200,60,0,0)", n: 50 * k, v0: 6, v1: 22 * k, life: 1.3, px: 7 * k, s0: 1, s1: 3.5, radius: 2 * k });
+    burst(pos, { inner: "rgba(120,120,120,0.9)", outer: "rgba(70,70,70,0.6)", c0: "rgba(110,105,100,0.8)", c1: "rgba(60,60,60,0)", n: 26 * k, v0: 3, v1: 9, life: 2.6, px: 10 * k, s0: 1, s1: 4, radius: 3 * k });
+    burst(pos, { inner: "rgba(60,55,50,1)", outer: "rgba(40,35,30,1)", c0: "#4a443d", c1: "rgba(40,35,30,0)", n: 30 * k, v0: 10, v1: 30, life: 2.2, px: 1.2, s0: 1, s1: 1, radius: 1, gravity: 9.8 });
+    flash(pos, "rgba(255,240,200,0.95)", 90 * k, 0.18);
+    const d = C.Cartesian3.distance(camera.positionWC, pos); shake = Math.max(shake, Math.min(1, (big ? 120 : 60) / Math.max(20, d)));
+  }
+  function collapse(pos) { // dust cloud and falling debris where a building came down
+    burst(pos, { inner: "rgba(200,190,170,0.9)", outer: "rgba(150,140,125,0.6)", c0: "rgba(190,180,160,0.85)", c1: "rgba(150,140,125,0)", n: 60, v0: 2, v1: 8, life: 4.5, px: 18, s0: 1, s1: 5, radius: 15 });
+    burst(pos, { inner: "rgba(90,85,80,1)", outer: "rgba(70,65,60,1)", c0: "#5a544c", c1: "rgba(60,55,50,0)", n: 50, v0: 3, v1: 14, life: 3.0, px: 1.8, s0: 1, s1: 1, radius: 10, gravity: 9.8 });
+  }
+  function destroyAt(hit) {
+    const obj = hit.object, pos = hit.position;
+    if (obj instanceof C.Cesium3DTileFeature) {             // PLATEAU building: hide it (and keep it hidden when its tile reloads)
+      const url = obj.content && obj.content.url; const id = obj.featureId;
+      setTimeout(() => { try { obj.show = false; } catch (e) { /* tile unloaded */ } }, 350);
+      if (url !== undefined) { if (!hiddenFeatures.has(url)) hiddenFeatures.set(url, new Set()); hiddenFeatures.get(url).add(id); }
+      collapse(pos); return;
+    }
+    if (obj && obj.primitive && typeof obj.id === "string" && obj.id.startsWith("osm-")) { // OSM building (Nangang)
+      try { obj.primitive.getGeometryInstanceAttributes(obj.id).show = C.ShowGeometryInstanceAttribute.toValue(false); hiddenOsm.add(obj.id); } catch (e) { /* ignore */ }
+      collapse(pos); return;
+    }
+    if (worldMode === "google" && tilesets[0] && (obj && obj.primitive === tilesets[0] || hit.object === undefined)) { // one big mesh: cut a building-sized hole
+      const ts = tilesets[0];
+      if (!ts.clippingPolygons) ts.clippingPolygons = new C.ClippingPolygonCollection();
+      const cp = ts.clippingPolygons; if (cp.length >= MAX_CLIPS) cp.remove(cp.get(0));
+      const carto = C.Cartographic.fromCartesian(pos), lat = carto.latitude / DEG, lon = carto.longitude / DEG, r = 16;
+      const ring = [[-r, -r], [r, -r], [r, r], [-r, r]].map(([e, n]) => { const o = offsetLL(lat, lon, e, n); return C.Cartesian3.fromDegrees(o.lon, o.lat); });
+      cp.add(new C.ClippingPolygon({ positions: ring })); clipCount++;
+      collapse(pos);
+    }
+  }
+  function reapplyHidden(tile) {
+    const set = tile && tile.content && hiddenFeatures.get(tile.content.url); if (!set) return;
+    for (const id of set) { try { if (id < tile.content.featuresLength) tile.content.getFeature(id).show = false; } catch (e) { /* ignore */ } }
+  }
+  function rebuildCity() {
+    for (const ts of tilesets) { if (ts.clippingPolygons) ts.clippingPolygons.removeAll();
+      // show every feature of loaded tiles again
+      try { ts.root && (function walk(t) { if (t.content && t.content.featuresLength) for (let i = 0; i < t.content.featuresLength; i++) t.content.getFeature(i).show = true; (t.children || []).forEach(walk); })(ts.root); } catch (e) { /* ignore */ } }
+    hiddenFeatures.clear();
+    if (localWorld && localWorld.osmPrimitive) for (const id of hiddenOsm) { try { localWorld.osmPrimitive.getGeometryInstanceAttributes(id).show = C.ShowGeometryInstanceAttribute.toValue(true); } catch (e) { /* ignore */ } }
+    hiddenOsm.clear(); clipCount = 0;
+  }
+  function requestFire() {
+    if (state.mode !== "fly" || !fly.model || fireCooldown > 0) return;
+    const W = WEAPONS[fly.character || "gundam"]; fireCooldown = W.cooldown;
+    // aim: through the crosshair (screen centre)
+    const cv = scene.canvas, ray = camera.getPickRay(new C.Cartesian2(cv.clientWidth / 2, cv.clientHeight / 2));
+    // ignore the character, its own shots and all effects (smoke would otherwise stop the ray)
+    // first real hit along the ray: skip our own effects (smoke billboards, glow points, beams), which are picked per billboard
+    const ours = new Set([beamLines, glowPoints].concat(effects.map((e) => e.sys && e.sys._billboardCollection), shots.map((s) => s.trail && s.trail._billboardCollection)).filter(Boolean));
+    let hit;
+    try { hit = scene.drillPickFromRay(ray, 6, [fly.model, fly.pendingModel].filter(Boolean), 1.0).find((r) => !(r.object && (ours.has(r.object.collection) || ours.has(r.object.primitive)))); } catch (e) { hit = undefined; }
+    let target = hit && hit.position && C.Cartesian3.distance(ray.origin, hit.position) < W.range + 200 ? hit.position : C.Cartesian3.add(ray.origin, C.Cartesian3.multiplyByScalar(ray.direction, W.range, new C.Cartesian3()), new C.Cartesian3());
+    if (!(hit && hit.position && target === hit.position)) hit = null;
+    // aim pitch (world) for the animation: angle of the line of fire above the horizon
+    const up = C.Cartesian3.normalize(fly.model ? C.Matrix4.getTranslation(fly.model.modelMatrix, new C.Cartesian3()) : ray.origin, new C.Cartesian3());
+    fly.aimPitch = Math.asin(Math.max(-1, Math.min(1, C.Cartesian3.dot(ray.direction, up))));
+    fly.fireT = 0; fly.fireTarget = target; fly.fireHit = hit; fly.fireDone = false;
+    if (fly.character !== "dragon") launch();   // the beam leaves at once; the fireball leaves at the end of the head lunge
+  }
+  function launch() {
+    fly.fireDone = true;
+    const W = WEAPONS[fly.character || "gundam"], dragon = fly.character === "dragon";
+    const from = dragon ? dragonMouthWorld() : gundamMuzzleWorld(fly.armAngle || 0);
+    const dir = C.Cartesian3.normalize(C.Cartesian3.subtract(fly.fireTarget, from, new C.Cartesian3()), new C.Cartesian3());
+    const dist = C.Cartesian3.distance(from, fly.fireTarget);
+    if (shots.length >= MAX_SHOTS) { const o = shots.shift(); removeShot(o); }
+    const s = { dragon, pos: C.Cartesian3.clone(from), dir, speed: W.speed, travelled: 0, dist, hit: fly.fireHit };
+    if (dragon) {
+      s.point = glowPoints.add({ position: from, color: C.Color.fromCssColorString("#ff8a1e"), pixelSize: 26, outlineColor: C.Color.fromCssColorString("rgba(255,220,120,0.8)"), outlineWidth: 4 });
+      s.trail = scene.primitives.add(new C.ParticleSystem({ image: sprite("rgba(255,240,180,1)", "rgba(255,110,20,0.9)"), modelMatrix: C.Transforms.eastNorthUpToFixedFrame(from), emitter: new C.SphereEmitter(0.4),
+        startColor: C.Color.fromCssColorString("#ffcf6a"), endColor: C.Color.fromCssColorString("rgba(120,30,0,0)"), startScale: 1.2, endScale: 0.2, minimumParticleLife: 0.25, maximumParticleLife: 0.5,
+        minimumSpeed: 0.5, maximumSpeed: 2, imageSize: new C.Cartesian2(1.6, 1.6), sizeInMeters: true, emissionRate: 45, lifetime: 30, loop: true }));
+      flash(from, "rgba(255,170,60,0.9)", 40, 0.15);
+    } else {
+      s.line = beamLines.add({ positions: [from, from], width: 16, material: C.Material.fromType("PolylineGlow", { color: C.Color.fromCssColorString("#ff8ae0"), glowPower: 0.45, taperPower: 0.5 }) });
+      s.point = glowPoints.add({ position: from, color: C.Color.fromCssColorString("#fff0fb"), pixelSize: 12, outlineColor: C.Color.fromCssColorString("rgba(255,110,220,0.8)"), outlineWidth: 5 });
+      flash(from, "rgba(255,200,240,0.95)", 46, 0.08);   // muzzle flash
+      fly.vf -= 4;                                          // recoil
+    }
+    shots.push(s);
+  }
+  function removeShot(s) { if (s.line) beamLines.remove(s.line); if (s.point) glowPoints.remove(s.point); if (s.trail) scene.primitives.remove(s.trail); }
+  function updateWeapons(dt) {
+    fireCooldown = Math.max(0, fireCooldown - dt);
+    if (fly.fireT !== undefined) { fly.fireT += dt; if (fly.character === "dragon" && !fly.fireDone && fly.fireT >= 0.24) launch(); }
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i]; const step = Math.min(s.speed * dt, s.dist - s.travelled); s.travelled += step;
+      C.Cartesian3.add(s.pos, C.Cartesian3.multiplyByScalar(s.dir, step, new C.Cartesian3()), s.pos);
+      if (s.line) { const tail = C.Cartesian3.subtract(s.pos, C.Cartesian3.multiplyByScalar(s.dir, Math.min(70, s.travelled), new C.Cartesian3()), new C.Cartesian3()); s.line.positions = [tail, C.Cartesian3.clone(s.pos)]; }
+      if (s.point) s.point.position = s.pos;
+      if (s.trail) s.trail.modelMatrix = C.Transforms.eastNorthUpToFixedFrame(s.pos);
+      if (s.travelled >= s.dist - 1e-3) {
+        removeShot(s); shots.splice(i, 1);
+        if (s.hit) { explode(s.pos, s.dragon); destroyAt(s.hit); } else explode(s.pos, false);
+      }
+    }
+    updateEffects(dt);
+  }
+  function updateEffects(dt) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const e = effects[i]; e.t += dt;
+      if (e.point) { const u = e.t / e.life; e.point.pixelSize = e.size * (1 + u); e.point.color = e.point.color.withAlpha(Math.max(0, 1 - u)); }
+      if (e.t >= e.life) { if (e.sys) scene.primitives.remove(e.sys); if (e.point) glowPoints.remove(e.point); effects.splice(i, 1); }
+    }
+  }
+  function applyShake(dt) {
+    if (shake <= 0.001) return;
+    const a = shake * 0.02; camera.lookRight((Math.random() - 0.5) * a); camera.lookUp((Math.random() - 0.5) * a);
+    shake *= Math.exp(-dt * 6);
+  }
+  // fire animations
+  function poseGundamArm(dt) {
+    const t = fly.fireT === undefined ? 99 : fly.fireT;
+    // raise and aim for 1.4 s after a shot, then lower; arm angle about the shoulder (negative = forward/up), -90 deg = level
+    const aim = t < 1.4 ? -(90 * DEG + (fly.aimPitch || 0) + fly.lean * 0.6) : 0;
+    const recoil = t < 0.25 ? 10 * DEG * Math.exp(-t * 18) : 0;
+    fly.armAngle = (fly.armAngle || 0) + (aim - (fly.armAngle || 0)) * (1 - Math.exp(-dt * (aim ? 14 : 4)));
+    const ang = fly.armAngle + recoil;
+    const n = fly.model && fly.model.ready && (fly.model.__arm !== undefined ? fly.model.__arm : (fly.model.__arm = (() => { try { return fly.model.getNode("armR") || null; } catch (e) { return null; } })()));
+    if (n) n.matrix = C.Matrix4.fromRotationTranslation(C.Matrix3.fromRotationX(ang), new C.Cartesian3(ARM_PIVOT[0], ARM_PIVOT[1], ARM_PIVOT[2]));
+  }
+  function dragonFireAnim() { // [extra head pitch, extra wing] for the rear-back / lunge
+    const t = fly.fireT === undefined ? 99 : fly.fireT;
+    if (t < 0.18) { const u = t / 0.18; return [22 * DEG * u, 30 * DEG * u]; }
+    if (t < 0.4) { const u = (t - 0.18) / 0.22; return [22 * DEG - 40 * DEG * Math.sin(u * Math.PI / 2), 30 * DEG * (1 - u)]; }
+    if (t < 0.8) { const u = (t - 0.4) / 0.4; return [-18 * DEG * (1 - u), 0]; }
+    return [0, 0];
+  }
+  $("rebuildBtn").onclick = () => { rebuildCity(); };
+  $("fireBtn").addEventListener("pointerdown", (e) => { $("fireBtn").classList.add("on"); requestFire(); e.preventDefault(); });
+  $("fireBtn").addEventListener("pointerup", () => $("fireBtn").classList.remove("on"));
+  $("fireBtn").addEventListener("pointercancel", () => $("fireBtn").classList.remove("on"));
+
   // ---- main loop ------------------------------------------------------------
   const state = { mode: "lobby" };
   let last = performance.now(), fpsAcc = 0, fpsN = 0;
   scene.preUpdate.addEventListener(() => {
     const now = performance.now(); const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (state.mode === "fly") { updateFlight(dt); updateCamera(dt); }
+    if (state.mode === "fly") { updateFlight(dt); updateWeapons(dt); updateCamera(dt); applyShake(dt); }
     else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); }
     else if (state.mode === "pause") readInput();
+    if (state.mode !== "fly") updateEffects(dt);
     if (settings.showFps) { fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { $("hudFps").textContent = " · " + (fpsN / fpsAcc).toFixed(0) + " fps"; fpsAcc = 0; fpsN = 0; } }
   });
 
@@ -1018,7 +1209,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, tilesets, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";

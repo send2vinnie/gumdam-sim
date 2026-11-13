@@ -40,6 +40,7 @@ Choose it in **Settings → City source** (applies after *Save & reload*). The d
 | Turn | A / D, ← / → | Right stick left/right | Left stick left/right |
 | Strafe | Q / E | Left stick left/right | Right stick left/right |
 | Up / down | Space / C | RT / LT | Right stick up/down |
+| Fire | F, left click | RB or X | FIRE |
 | Boost | Shift | A (hold) | BOOST (hold) |
 | Camera | V, mouse drag, wheel | Y, right stick up/down | ◎, drag empty screen |
 | Pause | Esc | Start | ☰ |
@@ -70,6 +71,19 @@ heads into the turn (up to 30°). The dragon also beats its wings (slowly when c
 when landed) and swings its tail. The chase, far and side cameras and the cockpit / rider's-eye view are sized per character. The chase, far, side and start-screen
 cameras never go into buildings: a ray from the character toward the camera pulls the camera in front of any wall in the way
 (checked about 10-14 times a second), and it eases back out when the view is clear.
+
+## Weapons and destructible buildings
+Aim with the crosshair in the middle of the screen and fire (F, left click, gamepad RB/X, or the FIRE button on touch screens).
+* **Gundam - beam rifle:** the right arm swings up to aim along the crosshair (the arm and rifle are a separate part pivoted at
+  the shoulder), with a recoil kick, a muzzle flash and the head looking at the target. A pink-white beam bolt flies at 600 m/s.
+* **Dragon - fireball:** the head rears back with a wing flare, then lunges forward and spits a glowing fireball (80 m/s, with
+  a fire trail). The rider keeps both hands on the horns.
+* **Hits** explode with fire, smoke, flying debris, a flash and a camera shake (stronger when you are close).
+* **Buildings come down:** in the Local city the building you hit disappears in a dust cloud with falling debris (PLATEAU
+  buildings in Tokyo and the OSM buildings in Nangang; it stays down when its tiles reload). In Google mode the city is one big
+  mesh, so a building-sized hole (about 32 m) is cut out instead, up to 12 at a time; this only changes what is drawn and stores
+  nothing from Google. **Pause menu → Rebuild city** puts everything back.
+* One aiming ray per shot finds the target, and projectiles and effects are capped, so it stays smooth on phones.
 
 ## Scale (verified, not assumed)
 * The uploaded model's glTF units are **not** metres: its head top sits at 46.28 units. It was rescaled by 0.38892 so the head
