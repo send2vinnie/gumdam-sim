@@ -74,8 +74,11 @@ Pick one on the start screen (**Character**), remembered between visits.
 In flight both characters bank into turns, lean with speed and pitch back when climbing / forward when diving, and turn their
 heads into the turn (up to 30°). The dragon also beats its wings (slowly when cruising, faster and deeper on boost, folded
 when landed) and swings its tail. The chase, far and side cameras and the cockpit / rider's-eye view are sized per character. The chase, far, side and start-screen
-cameras never go into buildings: a ray from the character toward the camera pulls the camera in front of any wall in the way
-(checked about 10-14 times a second), and it eases back out when the view is clear.
+cameras stay out of buildings and the ground without turning the view: when a wall, roof or the street is in the way, only the
+distance shortens, along the same line, so the look direction stays locked to the character. Five rays (toward the camera
+spot and just beside it, checked about 10-14 times a second) give a steady distance at thin edges; the camera eases in within
+about 0.15 s, stays in until the way has been clear for half a second, then eases out slowly. Looking up near the ground
+brings the camera closer instead of tilting the view.
 
 ## Graphics quality: Low
 **Low** (the default on phones) draws only what is near: everything beyond **3 km** is not rendered (the city fades into a hazy

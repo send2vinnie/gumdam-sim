@@ -692,31 +692,56 @@ void main() {
   }
 
   // ---- camera collision ------------------------------------------------------------
-  // A ray from the focus point toward the wanted camera position (character excluded). If a building or object is in the
-  // way, the camera moves in to just short of it; it eases back out when the way is clear. The ray is cast at most
-  // ~14 times a second (~9 on phones) and reused in between, so it stays cheap.
-  const camCol = { key: "", t: 0, allowed: Infinity, range: null };
+  // Rays from the focus point toward the wanted camera position (character, rider, shots and effects excluded). When a
+  // building or the ground is in the way, only the distance along the same line shortens: the view never turns or tilts.
+  // Five rays (centre, and four aimed 1.5 m / 0.5 m right, left, above and below the camera spot) give a stable minimum,
+  // so thin edges and tile detail changes don't make it jump. The centre ray and one side ray are cast ~14 times a second
+  // (~9 on phones) and reused in between, so it stays cheap. The camera eases in within about 0.15 s, stays in until the
+  // line has been clear for 0.5 s, then eases out slowly, so grazing an edge doesn't flicker in and out.
+  const camCol = { key: "", t: 0, allowed: Infinity, range: null, rays: [Infinity, Infinity, Infinity, Infinity, Infinity], next: 1, clearT: 0 };
   const CAM_RAY_MS = isTouch ? 110 : 70;
-  const scratchDir = new C.Cartesian3(), scratchDirW = new C.Cartesian3(), scratchRay = new C.Ray();
+  const CAM_SIDE = [null, [1, 0], [-1, 0], [0, 1], [0, -1]];   // [right, up] offsets of the side rays' end points
+  const scratchDir = new C.Cartesian3(), scratchDirW = new C.Cartesian3(), scratchRay = new C.Ray(), scratchEnu = new C.Matrix4();
+  const scratchSide = new C.Cartesian3(), scratchEnd = new C.Cartesian3();
+  function camRay(k, target, heading, pitch, range, spread, exclude) {
+    // ray k toward the camera spot (k > 0: toward a point beside it); returns the hit distance along the centre line
+    const sh = Math.sin(heading), chd = Math.cos(heading), sp = Math.sin(pitch), cp = Math.cos(pitch);
+    C.Cartesian3.fromElements(-sh * cp, -chd * cp, -sp, scratchDir);                       // target -> camera (east-north-up)
+    if (k > 0) {
+      const o = CAM_SIDE[k];   // camera right = (cos h, -sin h, 0), camera up = (-sin p sin h, -sin p cos h, cos p)
+      C.Cartesian3.fromElements(o[0] * chd - o[1] * sp * sh, -o[0] * sh - o[1] * sp * chd, o[1] * cp, scratchSide);
+      C.Cartesian3.multiplyByScalar(scratchDir, range, scratchEnd);
+      C.Cartesian3.add(scratchEnd, C.Cartesian3.multiplyByScalar(scratchSide, spread, scratchSide), scratchEnd);
+      C.Cartesian3.normalize(scratchEnd, scratchEnd);
+    } else C.Cartesian3.clone(scratchDir, scratchEnd);
+    const cosToCentre = C.Cartesian3.dot(scratchEnd, scratchDir);
+    C.Transforms.eastNorthUpToFixedFrame(target, undefined, scratchEnu);
+    C.Matrix4.multiplyByPointAsVector(scratchEnu, scratchEnd, scratchDirW); C.Cartesian3.normalize(scratchDirW, scratchDirW);
+    scratchRay.origin = target; scratchRay.direction = scratchDirW;
+    let hit; try { hit = withOwnFxHidden(() => scene.pickFromRay(scratchRay, exclude, 0.5)); } catch (e) { hit = undefined; }
+    return hit && hit.position ? C.Cartesian3.distance(target, hit.position) * cosToCentre : Infinity;
+  }
   function collideRange(key, target, heading, pitch, range, exclude, margin, minRange, dt) {
     const now = performance.now();
-    if (camCol.key !== key) { camCol.key = key; camCol.range = null; camCol.t = 0; camCol.allowed = Infinity; }
+    if (camCol.key !== key) { camCol.key = key; camCol.range = null; camCol.t = 0; camCol.allowed = Infinity; camCol.rays.fill(Infinity); camCol.clearT = 0; }
     if (now - camCol.t > CAM_RAY_MS && scene.pickPositionSupported !== false) {
-      camCol.t = now;
-      // direction from the target to the camera, east-north-up (camera looks along heading/pitch toward the target)
-      C.Cartesian3.fromElements(-Math.sin(heading) * Math.cos(pitch), -Math.cos(heading) * Math.cos(pitch), -Math.sin(pitch), scratchDir);
-      C.Matrix4.multiplyByPointAsVector(C.Transforms.eastNorthUpToFixedFrame(target), scratchDir, scratchDirW);
-      C.Cartesian3.normalize(scratchDirW, scratchDirW);
-      scratchRay.origin = target; scratchRay.direction = scratchDirW;
-      let hit; try { hit = withOwnFxHidden(() => scene.pickFromRay(scratchRay, exclude, 0.5)); } catch (e) { hit = undefined; }
+      const first = camCol.t === 0; camCol.t = now;
+      const spread = minRange < 6 ? 0.5 : 1.5;
+      // the first time all five, then the centre plus one side ray in turn
+      for (const k of first ? [0, 1, 2, 3, 4] : [0, camCol.next]) camCol.rays[k] = camRay(k, target, heading, pitch, range, spread, exclude);
+      camCol.next = camCol.next % 4 + 1;
       let allowed = Infinity;
-      if (hit && hit.position) { const d = C.Cartesian3.distance(target, hit.position); if (d < range + margin) allowed = Math.max(minRange, d - margin); }
+      for (const d of camCol.rays) if (d < range + margin) allowed = Math.min(allowed, Math.max(minRange, d - margin));
       camCol.allowed = allowed;
     }
     const want = Math.min(range, camCol.allowed);
     if (camCol.range === null) camCol.range = want;
-    // move in at once (never show the inside of a wall), ease back out without jitter
-    camCol.range = want < camCol.range ? want : camCol.range + (want - camCol.range) * (1 - Math.exp(-dt * 1.6));
+    if (want < camCol.range - 0.01) {          // blocked: ease in quickly (about 0.15 s)
+      camCol.range += (want - camCol.range) * (1 - Math.exp(-dt / 0.05)); camCol.clearT = 0;
+    } else if (want > camCol.range + 0.05) {   // clear: wait 0.5 s, then ease out slowly
+      camCol.clearT += dt;
+      if (camCol.clearT > 0.5) camCol.range += (want - camCol.range) * (1 - Math.exp(-dt * 1.2));
+    } else { camCol.range = want; camCol.clearT = 0; }
     return camCol.range;
   }
 
@@ -1129,15 +1154,17 @@ void main() {
     const baseRange = fly.cam === 0 ? ch.cams[0] : fly.cam === 1 ? ch.cams[1] : ch.cams[2];
     let range = baseRange * look.zoom;
     let pitch = cam.pitch * DEG + look.pitch;
-    // keep the camera above street level
-    if (fly.ground !== undefined) {
-      const camUp = lift - Math.sin(-pitch) * range;
-      if (fly.h + camUp < fly.ground + 2) pitch = -Math.asin(Math.min(1, Math.max(-1, (fly.h + lift - fly.ground - 2) / range)));
+    const small = fly.character === "dragon", minRange = small ? 3.5 : 12, floor = small ? 0.8 : 2;
+    // keep the camera above the street or roof below the character: when looking up (camera below the focus point), the
+    // camera comes closer along the same line instead of tilting the view; tilt only if even the closest distance is too low
+    if (fly.ground !== undefined && pitch > 0) {
+      const room = fly.h + lift - fly.ground - floor;   // metres the camera may sit below the focus point
+      const maxR = room / Math.sin(pitch);
+      if (maxR < range) { range = Math.max(minRange, maxR); if (maxR < minRange) pitch = Math.asin(Math.max(0, Math.min(1, room / minRange))); }
     }
     const heading = fly.az * DEG + (cam.yaw || 0) * DEG + look.yaw;
-    const small = fly.character === "dragon";
     range = collideRange("fly" + fly.cam + fly.character, target, heading, pitch, range, [fly.model, fly.rider, fly.pendingModel].filter(Boolean),
-      small ? 0.8 : 2.0, small ? 3.5 : 12, dt || 0.016);
+      small ? 0.8 : 2.0, minRange, dt || 0.016);
     camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target), new C.HeadingPitchRange(heading, pitch, range));
   }
 
