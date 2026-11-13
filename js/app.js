@@ -36,6 +36,28 @@
   // ---- true-scale constants -------------------------------------------------
   const MS_HEIGHT = 18.0;          // RX-78-02 head height (m)
   const MS_CENTER = 9.0;           // pivot for lean/bank (m above feet)
+
+  // ---- characters ---------------------------------------------------------------
+  // Dragon: shown at a rideable size instead of its official 1.7 m. Change this one number to resize it;
+  // the rider stays 1.75 m and its seat moves with the dragon.
+  const DRAGON_HEIGHT_M = 4.0;
+  const DRAGON_NATIVE_H = 18.16;   // standing height (horn tips) in dragon.glb units
+  const DRAGON_SCALE = DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
+  const RIDER_HEIGHT_M = 1.75, RIDER_NATIVE_H = 17.62;
+  const RIDER_SCALE = RIDER_HEIGHT_M / RIDER_NATIVE_H;
+  const DRAGON_SEAT = [1.45, 10.42, 0];    // top of the back between the wings, dragon.glb flight frame (X fwd, Y up, Z right)
+  const D_PITCH = 55 * DEG;                // body pitch baked into dragon.glb (native joints are in the upright frame)
+  const DRAGON_JOINTS = {
+    head: { p: [0, -3.0, 12.8], rest: -45 * DEG }, tail: { p: [0, 2.6, 4.5], rest: -52 * DEG },
+    wingL: { p: [2.6, 0.5, 11.0] }, wingR: { p: [-2.6, 0.5, 11.0] }
+  };
+  const D_UP = [0, Math.sin(D_PITCH), Math.cos(D_PITCH)];     // flight "up" in the dragon's native frame (yaw axis)
+  const D_FWD = [0, -Math.cos(D_PITCH), Math.sin(D_PITCH)];   // flight "forward" in the native frame (wing-beat axis)
+  const CHARACTERS = {
+    gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45] },
+    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, center: 6.0 * DRAGON_SCALE, eye: DRAGON_SEAT[1] * DRAGON_SCALE + 0.95 * RIDER_HEIGHT_M * 0.62,
+      eyeFwd: DRAGON_SEAT[0] * DRAGON_SCALE + 0.1, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M] }
+  };
   const PILOT_HEIGHT = 1.75;
   const BAR_HEIGHT = 22.18;        // centre of the closed fists in the pull-up rig (feet 0.6 m off the ground at full hang)
   const BAR_FORWARD = 0.21;        // bar offset along the Gundam's facing axis (the fists close around it)
@@ -64,6 +86,8 @@
   settings.cityDetail = CITY_SSE[storedCity] ? storedCity
     : lowMem ? "verylow" : ({ low: "low", medium: "medium", high: "high" }[settings.quality] || (isTouch ? "low" : "medium"));
   settings.modelDetail = MODEL_NAMES[store.get("modelDetail", null)] ? store.get("modelDetail", null) : (isTouch ? "medium" : "high");
+  settings.character = CHARACTERS[store.get("character", null)] ? store.get("character", null) : "gundam";
+  const CH = () => CHARACTERS[fly.character || settings.character];
   function modelUrl(kind) {
     const base = kind === "pullup" ? "models/gundam_rx78_pullup_18m" : "models/gundam_rx78_18m";
     return base + ({ low: "_low", medium: "_med", high: "" }[settings.modelDetail] || "") + ".glb";
@@ -334,6 +358,25 @@ void main() {
     node.matrix = C.Matrix4.fromRotationTranslation(scratchHeadRot, HEAD_PIVOT, node.matrix ? C.Matrix4.clone(node.matrix) : new C.Matrix4());
   }
 
+  // Dragon joints (dragon.glb): node matrices are local to the dragon's flight-frame root, in its native upright frame.
+  // yaw > 0 turns the head to its right, pitch > 0 looks up, wing > 0 raises both wings, tailYaw swings the tail.
+  const scratchQ = new C.Quaternion(), scratchQ2 = new C.Quaternion(), scratchM3 = new C.Matrix3();
+  const axisQ = (a, ang, res) => C.Quaternion.fromAxisAngle(new C.Cartesian3(a[0], a[1], a[2]), ang, res);
+  function setJoint(node, p, q) { node.matrix = C.Matrix4.fromRotationTranslation(C.Matrix3.fromQuaternion(q, scratchM3), new C.Cartesian3(p[0], p[1], p[2]), new C.Matrix4()); }
+  function poseDragon(model, yaw, pitch, wing, tailYaw) {
+    if (!model || !model.ready) return;
+    if (!model.__nodes) { const n = {}; for (const k of ["head", "wingL", "wingR", "tail"]) { try { n[k] = model.getNode(k); } catch (e) { n[k] = null; } } model.__nodes = n; }
+    const N = model.__nodes, J = DRAGON_JOINTS;
+    if (N.head) { // yaw about flight-up, then pitch about the lateral axis, on top of the resting head angle
+      C.Quaternion.multiply(axisQ(D_UP, -yaw, scratchQ), axisQ([1, 0, 0], -pitch * 0.8 + J.head.rest, scratchQ2), scratchQ);
+      setJoint(N.head, J.head.p, scratchQ);
+    }
+    // left wing is on native +x: a positive turn about the forward axis lifts it; the right wing mirrors
+    if (N.wingL) setJoint(N.wingL, J.wingL.p, axisQ(D_FWD, wing, scratchQ));
+    if (N.wingR) setJoint(N.wingR, J.wingR.p, axisQ(D_FWD, -wing, scratchQ));
+    if (N.tail) { C.Quaternion.multiply(axisQ(D_UP, tailYaw, scratchQ), axisQ([1, 0, 0], J.tail.rest, scratchQ2), scratchQ); setJoint(N.tail, J.tail.p, scratchQ); }
+  }
+
   function whenReady(model) {
     return new Promise((resolve) => {
       if (model.ready) return resolve(true);
@@ -365,7 +408,7 @@ void main() {
     updateDetailInfo();
     const gen = ++modelGen;
     const jobs = [];
-    if (fly.model) {
+    if (fly.model && fly.character === "gundam") {   // the dragon has a single detail level
       jobs.push((async () => {
         const old = fly.model;
         const m = await swapModel(old, modelUrl("flight"));
@@ -628,13 +671,23 @@ void main() {
   const CAMS = [{ name: "CHASE CAM", range: 55, pitch: -10 }, { name: "FAR CAM", range: 160, pitch: -18 }, { name: "COCKPIT", range: 0, pitch: 0 }, { name: "SIDE CAM", range: 45, pitch: -4, yaw: 90 }];
   function cycleCamera() { fly.cam = (fly.cam + 1) % CAMS.length; look.yaw = 0; look.pitch = 0; $("hudCam").textContent = CAMS[fly.cam].name; }
 
-  async function startFlight(spawn) {
-    await fade(true);
-    if (!fly.model) {
+  async function loadCharacter(ch) {
+    if (fly.model && fly.character === ch) return;
+    if (fly.model) { scene.primitives.remove(fly.model); fly.model = null; }
+    if (fly.rider) { scene.primitives.remove(fly.rider); fly.rider = null; }
+    fly.character = ch; fly.headYaw = fly.headPitch = 0; fly.wingPhase = 0;
+    if (ch === "dragon") {
+      fly.model = await loadModel("models/dragon.glb", C.Matrix4.IDENTITY, { scale: DRAGON_SCALE, maximumScale: undefined });
+      fly.rider = await loadModel("models/rider.glb", C.Matrix4.IDENTITY, { scale: RIDER_SCALE, maximumScale: undefined });
+    } else {
       const lvl = settings.modelDetail;
       fly.model = await loadModel(modelUrl("flight"), C.Matrix4.IDENTITY);
       if (lvl !== settings.modelDetail) setModelDetail(settings.modelDetail); // detail changed while loading
     }
+  }
+  async function startFlight(spawn) {
+    await fade(true);
+    await loadCharacter(settings.character);
     placeAt(spawn);
     state.mode = "fly";
     lobby.active = false;
@@ -667,7 +720,7 @@ void main() {
     // proposed move
     const s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
     let ve = fly.vf * s + fly.vs * c, vn = fly.vf * c - fly.vs * s;
-    const excl = [fly.model, fly.pendingModel].filter(Boolean);
+    const excl = [fly.model, fly.pendingModel, fly.rider].filter(Boolean);
 
     // ground under us (sampled every frame; cheap enough at 1.5 m footprint)
     const g = groundHeightAt(fly.lon, fly.lat, excl);
@@ -705,7 +758,7 @@ void main() {
     // body attitude: lean into motion, bank into turns (only when airborne)
     const air = fly.grounded ? 0.15 : 1;
     // lean forward with speed, back when climbing and forward when diving
-    const targetLean = ((fly.vf / (MAX_FWD * BOOST)) * 55 - (fly.vu / (MAX_VERT * 1.8)) * 18) * DEG * air;
+    const targetLean = ((fly.vf / (MAX_FWD * BOOST)) * CH().leanMax - (fly.vu / (MAX_VERT * 1.8)) * 18) * DEG * air;
     const targetBank = (fly.yawRate / TURN_RATE) * 22 * DEG * air + (fly.vs / MAX_STRAFE) * 12 * DEG * air;
     const k = 1 - Math.exp(-dt * 3);
     fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k;
@@ -714,7 +767,22 @@ void main() {
     const turn = Math.max(-1, Math.min(1, fly.yawRate / TURN_RATE + 0.35 * fly.vs / MAX_STRAFE));
     fly.headYaw = (fly.headYaw || 0) + (turn * 30 * DEG - (fly.headYaw || 0)) * kh;
     fly.headPitch = (fly.headPitch || 0) + (Math.max(-1, Math.min(1, fly.vu / MAX_VERT)) * 12 * DEG - (fly.headPitch || 0)) * kh;
-    if (fly.model) { fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, MS_CENTER); poseHead(fly.model, fly.headYaw, fly.headPitch); }
+    if (fly.model) {
+      fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, CH().center);
+      if (fly.character === "dragon") {
+        // wings: slow beats when cruising, faster and deeper on boost, nearly folded when landed
+        const beat = fly.grounded ? 0.35 : input.boost ? 2.2 : 0.9 + 0.6 * Math.min(1, Math.abs(fly.vu) / MAX_VERT);
+        fly.wingPhase = ((fly.wingPhase || 0) + dt * beat * 2 * Math.PI) % (2 * Math.PI);
+        const amp = (fly.grounded ? 4 : input.boost ? 34 : 22) * DEG;
+        fly.wingAmp = (fly.wingAmp || amp) + (amp - (fly.wingAmp || amp)) * (1 - Math.exp(-dt * 3));
+        poseDragon(fly.model, fly.headYaw, fly.headPitch, fly.wingAmp * Math.sin(fly.wingPhase) + (fly.grounded ? 25 * DEG : 0), -fly.headYaw * 0.6);
+        if (fly.rider) {
+          fly.rider.modelMatrix = C.Matrix4.multiply(fly.model.modelMatrix,
+            C.Matrix4.fromTranslation(new C.Cartesian3(DRAGON_SEAT[0] * DRAGON_SCALE, -DRAGON_SEAT[2] * DRAGON_SCALE, DRAGON_SEAT[1] * DRAGON_SCALE)), new C.Matrix4());
+          fly.rider.show = CAMS[fly.cam].range !== 0;
+        }
+      } else poseHead(fly.model, fly.headYaw, fly.headPitch);
+    }
     fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
     if (fly.pendingModel && fly.model) { fly.pendingModel.modelMatrix = fly.model.modelMatrix; fly.pendingModel.show = fly.model.show; }
 
@@ -725,7 +793,7 @@ void main() {
     $("hudSpeed").textContent = spd.toFixed(0);
     $("hudThrust").style.width = Math.min(100, Math.abs(fly.vf) / (MAX_FWD * BOOST) * 100) + "%";
     $("hudAgl").textContent = isFinite(agl) ? agl.toFixed(0) : "--";
-    $("hudAglMs").textContent = isFinite(agl) ? (agl / MS_HEIGHT).toFixed(1) + " × MS height" : "";
+    $("hudAglMs").textContent = isFinite(agl) ? (agl / CH().height).toFixed(1) + " × " + CH().unit : "";
     $("hudElev").textContent = (fly.h - (demoMode ? 0 : 37)).toFixed(0);
     $("hudVs").textContent = fly.vu.toFixed(1);
     $("hudMode").textContent = fly.grounded ? "LANDED" : input.boost ? "BOOST" : "HOVER";
@@ -735,24 +803,27 @@ void main() {
   }
 
   function updateCamera() {
-    const cam = CAMS[fly.cam];
+    const cam = CAMS[fly.cam], ch = CH();
     look.pitch = Math.max(-70 * DEG, Math.min(25 * DEG, look.pitch + input.lookY * (settings.invertY ? -1 : 1) * 0.03));
     if (cam.range === 0) {
-      // cockpit: eye at head height, looking forward
+      // cockpit (Gundam) / rider's eye view (dragon): eye at head height, looking forward
       camera.lookAtTransform(C.Matrix4.IDENTITY);
       const s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
-      const eye = offsetLL(fly.lat, fly.lon, s * 1.5, c * 1.5);
-      camera.setView({ destination: C.Cartesian3.fromDegrees(eye.lon, eye.lat, fly.h + 16.6),
+      const eye = offsetLL(fly.lat, fly.lon, s * ch.eyeFwd, c * ch.eyeFwd);
+      camera.setView({ destination: C.Cartesian3.fromDegrees(eye.lon, eye.lat, fly.h + ch.eye),
         orientation: { heading: fly.az * DEG + look.yaw, pitch: -fly.lean * 0.5 + look.pitch, roll: fly.bank * 0.5 } });
       return;
     }
-    const target = C.Cartesian3.fromDegrees(fly.lon, fly.lat, fly.h + MS_CENTER + 2);
-    let range = cam.range * look.zoom;
+    // chase / far / side distances suit the character's size
+    const lift = ch.center + ch.height * 0.11;
+    const target = C.Cartesian3.fromDegrees(fly.lon, fly.lat, fly.h + lift);
+    const baseRange = fly.cam === 0 ? ch.cams[0] : fly.cam === 1 ? ch.cams[1] : ch.cams[2];
+    let range = baseRange * look.zoom;
     let pitch = cam.pitch * DEG + look.pitch;
     // keep the camera above street level
     if (fly.ground !== undefined) {
-      const camUp = MS_CENTER + 2 - Math.sin(-pitch) * range;
-      if (fly.h + camUp < fly.ground + 2) pitch = -Math.asin(Math.min(1, (fly.h + MS_CENTER + 2 - fly.ground - 2) / range));
+      const camUp = lift - Math.sin(-pitch) * range;
+      if (fly.h + camUp < fly.ground + 2) pitch = -Math.asin(Math.min(1, Math.max(-1, (fly.h + lift - fly.ground - 2) / range)));
     }
     camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target),
       new C.HeadingPitchRange(fly.az * DEG + (cam.yaw || 0) * DEG + look.yaw, pitch, range));
@@ -789,6 +860,11 @@ void main() {
   const spawns = CFG.spawns || [];
   for (const sel of [$("spawnSelect"), $("teleportSelect")]) spawns.forEach((s, i) => sel.add(new Option(s.name, i)));
   $("startBtn").onclick = () => startFlight(spawns[+$("spawnSelect").value] || spawns[0]);
+  const charNote = () => { $("characterNote").textContent = settings.character === "dragon"
+    ? "The dragon is shown at a rideable " + DRAGON_HEIGHT_M + " m (its official height is 1.7 m), with a 1.75 m rider on its back."
+    : "True scale: the mobile suit stands 18.0 m."; };
+  $("characterSelect").value = settings.character; charNote();
+  $("characterSelect").onchange = () => { const v = $("characterSelect").value; if (!CHARACTERS[v]) return; settings.character = v; store.set("character", v); charNote(); };
   $("resumeBtn").onclick = togglePause;
   $("teleportBtn").onclick = () => { placeAt(spawns[+$("teleportSelect").value]); $("hudLoc").textContent = fly.spawn.name; togglePause(); };
   $("toLobbyBtn").onclick = async () => {
@@ -796,6 +872,7 @@ void main() {
     state.mode = "lobby"; viewer.clock.shouldAnimate = true;
     $("pause").hidden = true; $("hud").hidden = true; $("touch").hidden = true; $("lobby").hidden = false;
     if (fly.model) fly.model.show = false;
+    if (fly.rider) fly.rider.show = false;
     lobby.active = true; look.yaw = 0; look.pitch = 0; look.zoom = 1;
     await fade(false);
   };

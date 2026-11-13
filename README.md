@@ -56,6 +56,16 @@ Open **Settings** from the start screen or the pause menu. The two detail option
 The pause menu and Settings show the current levels, for example "Gundam: Medium · City: Low". **Graphics quality** still
 sets the defaults the first time the game runs, and still needs *Save & reload*.
 
+## Characters
+Pick one on the start screen (**Character**), remembered between visits.
+* **Gundam RX-78-02**, true scale (18.0 m head height).
+* **Dragon with rider**: the dragon is shown at a **rideable 4 m** rather than its official 1.7 m, with a 1.75 m rider seated on
+  its back. Change `DRAGON_HEIGHT_M` in `js/app.js` to resize it; the rider stays 1.75 m and its seat scales with the dragon.
+
+In flight both characters bank into turns, lean with speed and pitch back when climbing / forward when diving, and turn their
+heads into the turn (up to 30°). The dragon also beats its wings (slowly when cruising, faster and deeper on boost, folded
+when landed) and swings its tail. The chase, far and side cameras and the cockpit / rider's-eye view are sized per character.
+
 ## Scale (verified, not assumed)
 * The uploaded model's glTF units are **not** metres: its head top sits at 46.28 units. It was rescaled by 0.38892 so the head
   height is exactly **18.0 m**, the RX-78-02's official head height. Feet sit at the origin.
@@ -74,6 +84,7 @@ plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 * `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The fists stay closed around a round bar in one overhand grip the whole time (the finger curl is baked into the mesh, so no extra joints are needed on phones), and the arms are solved every frame so the forearms stay near vertical under the bar while the elbows travel down and out.
 * `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses
+* `models/dragon.glb` dragon in flight attitude with a 5-joint rig (body, head, wings, tail); `models/rider.glb` seated rider
 * `js/app.js` simulator, `config.js` key and locations, `sw.js` + `manifest.webmanifest` app install
 
 ## Credits
@@ -82,4 +93,9 @@ https://sketchfab.com/3d-models/the-origingundamthe-origin-ver-b1fbcc97214a431bb
 City data © Google and its data providers. CesiumJS © Cesium GS (Apache-2.0).
 Offline Tokyo: 出典：国土交通省 PLATEAU（https://www.mlit.go.jp/plateau/）。3D都市モデル（Project PLATEAU）を加工して作成
 (clipped, attributes removed, textures reduced, ground heights derived), used under the PLATEAU site policy (compatible with CC BY 4.0).
+Dragon: "charizard" by My Crea Pro (https://sketchfab.com/Beany-Boy), CC-BY-4.0,
+https://sketchfab.com/3d-models/charizard-2bfa8441c87347eb84df8e6574eddb86. Modified (posed for flight, rigged, rescaled).
+Dragon rider: "Wii - Super Smash Bros Brawl - Pokemon Trainer" by Waffles (https://sketchfab.com/jkimmel694), CC-BY-4.0 as stated
+by the uploader, https://sketchfab.com/3d-models/wii-super-smash-bros-brawl-pokemon-trainer-b0fd503839ff41e9ba33eaddc9bc4dae. Modified (posed seated, rescaled).
+Pokémon characters are trademarks of Nintendo / Creatures / GAME FREAK / The Pokémon Company; Gundam is a trademark of Sunrise / Bandai Namco. Non-commercial fan project.
 Offline Nangang: © OpenStreetMap contributors, Open Database License (ODbL), https://www.openstreetmap.org/copyright.

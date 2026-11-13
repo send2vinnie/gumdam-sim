@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=13">
+<link rel="stylesheet" href="css/style.css?v=14">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=13"></script>
+<script src="config.js?v=14"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -27,6 +27,13 @@
     <h1>Gundam Flight Simulator</h1>
     <div class="more" id="lobbyMoreB"><div>
       <p class="sub">Fly the RX-78-02 over and between the towers of Tokyo. Everything is true scale: the mobile suit stands 18.0 m, pilots 1.75 m, buildings are Google's real 3D city.</p>
+      <label class="field">Character
+        <select id="characterSelect">
+          <option value="gundam">Gundam RX-78-02 (18 m)</option>
+          <option value="dragon">Dragon with rider (rideable 4 m)</option>
+        </select>
+      </label>
+      <p class="note" id="characterNote"></p>
       <label class="field">Starting point in Tokyo
         <select id="spawnSelect"></select>
       </label>
@@ -183,10 +190,13 @@
     <p>City (Local mode), Taipei Nangang start screen: building footprints and heights © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>, available under the Open Database License (ODbL).</p>
     <p>Rendering: CesiumJS (Apache-2.0).</p>
     <p>Pilot figures: original low-poly models made for this simulator.</p>
+    <p>Dragon: "charizard" by My Crea Pro (<a href="https://sketchfab.com/Beany-Boy" target="_blank" rel="noopener">sketchfab.com/Beany-Boy</a>), licensed under <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC-BY-4.0</a>. <a href="https://sketchfab.com/3d-models/charizard-2bfa8441c87347eb84df8e6574eddb86" target="_blank" rel="noopener">Source</a>. Modified: posed for flight, rigged (head, wings, tail), shown at a rideable 4 m instead of its official 1.7 m.</p>
+    <p>Dragon rider: "Wii - Super Smash Bros Brawl - Pokemon Trainer" by Waffles (<a href="https://sketchfab.com/jkimmel694" target="_blank" rel="noopener">sketchfab.com/jkimmel694</a>), licensed under <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC-BY-4.0</a> as stated by the uploader. <a href="https://sketchfab.com/3d-models/wii-super-smash-bros-brawl-pokemon-trainer-b0fd503839ff41e9ba33eaddc9bc4dae" target="_blank" rel="noopener">Source</a>. Modified: posed seated, scaled to 1.75 m.</p>
+    <p>Pokémon characters are trademarks of Nintendo / Creatures / GAME FREAK / The Pokémon Company; Gundam is a trademark of Sunrise / Bandai Namco. This is a non-commercial fan project.</p>
     <div class="row"><button value="close" class="primary">OK</button></div>
   </form>
 </dialog>
 
-<script src="js/app.js?v=13"></script>
+<script src="js/app.js?v=14"></script>
 </body>
 </html>
