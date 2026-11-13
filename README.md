@@ -61,7 +61,8 @@ sets the defaults the first time the game runs, and still needs *Save & reload*.
 Pick one on the start screen (**Character**), remembered between visits.
 * **Gundam RX-78-02**, true scale (18.0 m head height).
 * **Dragon with rider**: the dragon is shown at a **rideable 4 m** rather than its official 1.7 m. A 1.75 m rider sits astride
-  its lower neck with legs wide open around it (checked to never pass through the neck, even during head turns), leaning
+  its lower neck, resting on it, with legs wide open around it (checked at build time: the seat touches the neck within 0.5 cm
+  and no part of the legs passes through it, even during head turns), leaning
   forward with both hands on its horns; the rider is skinned to the dragon's joints, so the hands stay on
   the horns when the head turns. To use another dragon size, change `DRAGON_HEIGHT_M` in `js/app.js` and rebuild the model with
   `node tools/build_dragon_rider.js <dragon folder> <trainer folder> models/dragon.glb <height>` so the rider stays 1.75 m.

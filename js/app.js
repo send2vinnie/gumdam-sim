@@ -45,7 +45,7 @@
   const DRAGON_NATIVE_H = 18.16;   // standing height (horn tips) in dragon.glb units
   const DRAGON_SCALE = DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
   const RIDER_HEIGHT_M = 1.75;
-  const RIDER_EYE = [6.24, 13.92];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
+  const RIDER_EYE = [6.24, 11.78];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
   const D_PITCH = 55 * DEG;                // body pitch baked into dragon.glb (native joints are in the upright frame)
   const DRAGON_JOINTS = {
     head: { p: [0, -3.0, 12.8], rest: -45 * DEG }, tail: { p: [0, 2.6, 4.5], rest: -52 * DEG },
