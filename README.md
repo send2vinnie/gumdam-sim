@@ -23,8 +23,12 @@ Choose it in **Settings → City source** (applies after *Save & reload*). The d
     Tokyo Tower, Tokyo Station / Marunouchi, Skytree and Odaiba (`cities/tokyo/<ward>/tileset.json`, 653 MB in total).
     Tiles were clipped to those areas, the building attribute tables were removed and texture atlases were reduced to
     1024 px. The ground under the buildings is built from each building's surveyed base height (`cities/tokyo/ground/`).
-  * Nangang start screen: OpenStreetMap building footprints within 800 m, extruded from their `height` / `building:levels`
-    tags (`cities/taipei/nangang-buildings.geojson`).
+  * Nangang start screen: OpenStreetMap building footprints within 1 km of the Exhibition Center, extruded from their
+    `height` / `building:levels` (+ `roof:levels`) tags, with `min_height` bases and multipolygon holes
+    (`cities/taipei/nangang-osm-v2.geojson`, rebuilt with `node --use-system-ca tools/build_nangang_osm.js [radius_m]`).
+    The older 800 m export (`nangang-buildings.geojson`) is kept as a fallback. Overture Maps and other open building
+    sets were checked too: for Taiwan they hold no more than OSM (Microsoft's and Google's machine-learned footprints
+    don't cover Taiwan), and Taiwan's official 3D models need a citizen-certificate login to download.
 * **Google Photorealistic (online, needs API key).** Photo-real everywhere, streamed from Google. It cannot be stored
   offline: Google's terms don't allow downloading or caching the tiles.
 

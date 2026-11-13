@@ -282,7 +282,12 @@ void main() {
       ts.tileLoad.addEventListener((tile) => reapplyHidden(tile));   // destroyed buildings stay destroyed when tiles reload
       scene.primitives.add(ts); tilesets.push(ts);
     }
-    const osm = await (await fetch("cities/taipei/nangang-buildings.geojson")).json();
+    // refreshed OSM buildings (tools/build_nangang_osm.js); the older, smaller export is the fallback
+    let osm;
+    for (const f of ["cities/taipei/nangang-osm-v2.geojson", "cities/taipei/nangang-buildings.geojson"]) {
+      try { const r = await fetch(f); if (r.ok) { osm = await r.json(); break; } } catch (e) { /* try the next file */ }
+    }
+    if (!osm) osm = { type: "FeatureCollection", features: [] };
     const instances = [];
     for (const f of osm.features) {
       const ring = f.geometry.coordinates[0];
