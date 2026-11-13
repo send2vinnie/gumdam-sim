@@ -391,12 +391,16 @@
   $("collapseBtn").onclick = () => setLobbyCollapsed(!$("lobbyCard").classList.contains("collapsed"));
   $("showMenuBtn").onclick = () => { setLobbyCollapsed(true); setLobbyPanelOff(false); };
   let tap = null;
-  canvas.addEventListener("pointerdown", (e) => { tap = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() }; });
+  canvas.addEventListener("pointerdown", (e) => { tap = e.isPrimary ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp, moved: 0 } : null; });
+  canvas.addEventListener("pointermove", (e) => { if (tap && e.pointerId === tap.id) tap.moved = Math.max(tap.moved, Math.hypot(e.clientX - tap.x, e.clientY - tap.y)); });
+  canvas.addEventListener("pointercancel", () => { tap = null; });
   canvas.addEventListener("pointerup", (e) => {
     const t = tap; tap = null;
     if (!t || t.id !== e.pointerId || state.mode !== "lobby" || $("lobby").hidden) return;
-    // only a quick tap with little movement counts; dragging to look around does not
-    if (Math.hypot(e.clientX - t.x, e.clientY - t.y) > 8 || performance.now() - t.t > 350) return;
+    // only a quick tap with little movement counts; dragging to look around does not.
+    // Event timestamps are used so a busy phone (frames still rendering) doesn't turn a quick tap into a "long press".
+    const moved = Math.max(t.moved, Math.hypot(e.clientX - t.x, e.clientY - t.y));
+    if (moved > (e.pointerType === "touch" ? 12 : 8) || e.timeStamp - t.t > 500) return;
     const off = !$("lobby").classList.contains("panel-off");
     if (!off) setLobbyCollapsed(true);
     setLobbyPanelOff(off);

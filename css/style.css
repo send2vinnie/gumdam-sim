@@ -24,9 +24,10 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 
 /* Collapsible start-screen panel */
 #lobbyCard { position: relative; transition: width .25s ease, padding .25s ease; }
-#lobbyCard h1 { padding-right: 40px; transition: font-size .25s ease, margin .25s ease; }
-.collapse-btn { position: absolute; top: 10px; right: 10px; width: 36px; height: 36px; min-height: 0; padding: 0; border-radius: 50%;
-  background: rgba(22, 38, 69, .85); font-size: 18px; line-height: 1; }
+#lobbyCard h1 { padding-right: 48px; transition: font-size .25s ease, margin .25s ease; }
+.collapse-btn { position: absolute; top: 6px; right: 6px; width: 44px; height: 44px; min-height: 0; padding: 0; border-radius: 50%;
+  background: rgba(22, 38, 69, .85); font-size: 20px; line-height: 1; z-index: 1; }
+.lobby-card, .lobby-card button, .show-menu { touch-action: manipulation; }
 .collapse-btn .chev { display: inline-block; transition: transform .25s ease; }
 .collapse-btn:focus-visible, .show-menu:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -36,7 +37,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #lobbyCard.collapsed h1 { font-size: 17px; margin: 2px 0 6px; }
 #lobbyCard.collapsed .more { grid-template-rows: 0fr; opacity: 0; visibility: hidden; }
 #lobbyCard.collapsed .chev { transform: rotate(180deg); }
-#lobbyCard.collapsed .collapse-btn { top: 8px; right: 8px; width: 32px; height: 32px; }
+#lobbyCard.collapsed .collapse-btn { top: 4px; right: 4px; }
 #lobbyCard.collapsed .status:empty { display: none; }
 #lobbyCard.collapsed .status { margin-top: 6px; }
 #lobby.panel-off #lobbyCard { display: none; }
