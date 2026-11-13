@@ -537,11 +537,41 @@ void main() {
         ? "Offline city: PLATEAU Tokyo (MLIT) · OSM Nangang" : "Demo grid (no city)");
   }
 
+  // ---- camera collision ------------------------------------------------------------
+  // A ray from the focus point toward the wanted camera position (character excluded). If a building or object is in the
+  // way, the camera moves in to just short of it; it eases back out when the way is clear. The ray is cast at most
+  // ~14 times a second (~9 on phones) and reused in between, so it stays cheap.
+  const camCol = { key: "", t: 0, allowed: Infinity, range: null };
+  const CAM_RAY_MS = isTouch ? 110 : 70;
+  const scratchDir = new C.Cartesian3(), scratchDirW = new C.Cartesian3(), scratchRay = new C.Ray();
+  function collideRange(key, target, heading, pitch, range, exclude, margin, minRange, dt) {
+    const now = performance.now();
+    if (camCol.key !== key) { camCol.key = key; camCol.range = null; camCol.t = 0; camCol.allowed = Infinity; }
+    if (now - camCol.t > CAM_RAY_MS && scene.pickPositionSupported !== false) {
+      camCol.t = now;
+      // direction from the target to the camera, east-north-up (camera looks along heading/pitch toward the target)
+      C.Cartesian3.fromElements(-Math.sin(heading) * Math.cos(pitch), -Math.cos(heading) * Math.cos(pitch), -Math.sin(pitch), scratchDir);
+      C.Matrix4.multiplyByPointAsVector(C.Transforms.eastNorthUpToFixedFrame(target), scratchDir, scratchDirW);
+      C.Cartesian3.normalize(scratchDirW, scratchDirW);
+      scratchRay.origin = target; scratchRay.direction = scratchDirW;
+      let hit; try { hit = scene.pickFromRay(scratchRay, exclude, 0.5); } catch (e) { hit = undefined; }
+      let allowed = Infinity;
+      if (hit && hit.position) { const d = C.Cartesian3.distance(target, hit.position); if (d < range + margin) allowed = Math.max(minRange, d - margin); }
+      camCol.allowed = allowed;
+    }
+    const want = Math.min(range, camCol.allowed);
+    if (camCol.range === null) camCol.range = want;
+    // move in at once (never show the inside of a wall), ease back out without jitter
+    camCol.range = want < camCol.range ? want : camCol.range + (want - camCol.range) * (1 - Math.exp(-dt * 1.6));
+    return camCol.range;
+  }
+
   function lobbyCamera(dt) {
     lobby.orbit += dt * 4 * DEG;
     const target = C.Cartesian3.fromDegrees(lobby.lon, lobby.lat, lobby.ground + 12);
-    camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target),
-      new C.HeadingPitchRange(lobby.heading * DEG + Math.PI + Math.sin(lobby.orbit) * 0.9 + look.yaw, -8 * DEG + look.pitch, 58 * look.zoom));
+    const heading = lobby.heading * DEG + Math.PI + Math.sin(lobby.orbit) * 0.9 + look.yaw, pitch = -8 * DEG + look.pitch;
+    const range = collideRange("lobby", target, heading, pitch, 58 * look.zoom, lobby.models, 2.0, 14, dt);
+    camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target), new C.HeadingPitchRange(heading, pitch, range));
   }
 
   // ---- input ------------------------------------------------------------------
@@ -802,7 +832,7 @@ void main() {
     drawCompass();
   }
 
-  function updateCamera() {
+  function updateCamera(dt) {
     const cam = CAMS[fly.cam], ch = CH();
     look.pitch = Math.max(-70 * DEG, Math.min(25 * DEG, look.pitch + input.lookY * (settings.invertY ? -1 : 1) * 0.03));
     if (cam.range === 0) {
@@ -825,8 +855,11 @@ void main() {
       const camUp = lift - Math.sin(-pitch) * range;
       if (fly.h + camUp < fly.ground + 2) pitch = -Math.asin(Math.min(1, Math.max(-1, (fly.h + lift - fly.ground - 2) / range)));
     }
-    camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target),
-      new C.HeadingPitchRange(fly.az * DEG + (cam.yaw || 0) * DEG + look.yaw, pitch, range));
+    const heading = fly.az * DEG + (cam.yaw || 0) * DEG + look.yaw;
+    const small = fly.character === "dragon";
+    range = collideRange("fly" + fly.cam + fly.character, target, heading, pitch, range, [fly.model, fly.rider, fly.pendingModel].filter(Boolean),
+      small ? 0.8 : 2.0, small ? 3.5 : 12, dt || 0.016);
+    camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target), new C.HeadingPitchRange(heading, pitch, range));
   }
 
   function drawCompass() {
@@ -845,7 +878,7 @@ void main() {
   let last = performance.now(), fpsAcc = 0, fpsN = 0;
   scene.preUpdate.addEventListener(() => {
     const now = performance.now(); const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (state.mode === "fly") { updateFlight(dt); updateCamera(); }
+    if (state.mode === "fly") { updateFlight(dt); updateCamera(dt); }
     else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); }
     else if (state.mode === "pause") readInput();
     if (settings.showFps) { fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { $("hudFps").textContent = " · " + (fpsN / fpsAcc).toFixed(0) + " fps"; fpsAcc = 0; fpsN = 0; } }

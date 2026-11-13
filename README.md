@@ -64,7 +64,9 @@ Pick one on the start screen (**Character**), remembered between visits.
 
 In flight both characters bank into turns, lean with speed and pitch back when climbing / forward when diving, and turn their
 heads into the turn (up to 30°). The dragon also beats its wings (slowly when cruising, faster and deeper on boost, folded
-when landed) and swings its tail. The chase, far and side cameras and the cockpit / rider's-eye view are sized per character.
+when landed) and swings its tail. The chase, far and side cameras and the cockpit / rider's-eye view are sized per character. The chase, far, side and start-screen
+cameras never go into buildings: a ray from the character toward the camera pulls the camera in front of any wall in the way
+(checked about 10-14 times a second), and it eases back out when the view is clear.
 
 ## Scale (verified, not assumed)
 * The uploaded model's glTF units are **not** metres: its head top sits at 46.28 units. It was rescaled by 0.38892 so the head
