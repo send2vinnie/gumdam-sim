@@ -1,0 +1,518 @@
+/* Gundam Flight Simulator — CesiumJS + Google Photorealistic 3D Tiles.
+ * All distances are metres. Models are authored at true scale:
+ *   gundam_rx78_18m.glb         static flight model, 18.0 m head height, feet at origin, faces +X
+ *   gundam_rx78_pullup_18m.glb  skinned model with a 4 s "PullUp" loop, same scale
+ *   pilot_*.glb                 1.75 m pilots, faces +X
+ * Models are added with scale 1 and minimumPixelSize 0, so nothing is ever enlarged on screen.
+ */
+(function () {
+  "use strict";
+  const C = Cesium;
+  const CFG = window.SIM_CONFIG || {};
+  const $ = (id) => document.getElementById(id);
+  const DEG = Math.PI / 180;
+  const R_EARTH = 6378137;
+
+  // ---- true-scale constants -------------------------------------------------
+  const MS_HEIGHT = 18.0;          // RX-78-02 head height (m)
+  const MS_CENTER = 9.0;           // pivot for lean/bank (m above feet)
+  const PILOT_HEIGHT = 1.75;
+  const BAR_HEIGHT = 22.07;        // from the pull-up rig (hands on bar, feet 0.6 m off ground at full hang)
+  const BAR_FORWARD = -0.35;       // bar offset along the Gundam's facing axis
+  const BAR_LENGTH = 13.0;
+  const POST_SPAN = 6.2;           // half distance between the two posts
+
+  // ---- settings (localStorage, guarded) ------------------------------------
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem("gfs." + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem("gfs." + k, JSON.stringify(v)); } catch (e) { /* ignore */ } }
+  };
+  const isTouch = window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+  const settings = {
+    key: (store.get("key", "") || CFG.googleMapsApiKey || "").trim(),
+    quality: store.get("quality", isTouch ? "low" : "medium"),
+    invertY: store.get("invertY", false),
+    showFps: store.get("showFps", false)
+  };
+  const QUALITY = {
+    low:    { sse: 32, browserRes: true,  fxaa: false, shadows: false, cacheBytes: 256 * 1024 * 1024 },
+    medium: { sse: 16, browserRes: true,  fxaa: true,  shadows: false, cacheBytes: 512 * 1024 * 1024 },
+    high:   { sse: 8,  browserRes: false, fxaa: true,  shadows: true,  cacheBytes: 1024 * 1024 * 1024 }
+  }[settings.quality] || { sse: 16, browserRes: true, fxaa: true, shadows: false, cacheBytes: 512 * 1024 * 1024 };
+
+  // ---- viewer ---------------------------------------------------------------
+  const viewer = new C.Viewer("cesiumContainer", {
+    baseLayer: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+    navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false, infoBox: false,
+    selectionIndicator: false, vrButton: false, projectionPicker: false,
+    terrainProvider: new C.EllipsoidTerrainProvider(),
+    useBrowserRecommendedResolution: QUALITY.browserRes,
+    msaaSamples: QUALITY.fxaa ? 4 : 1,
+    shadows: QUALITY.shadows
+  });
+  const scene = viewer.scene;
+  const camera = scene.camera;
+  scene.postProcessStages.fxaa.enabled = QUALITY.fxaa;
+  scene.screenSpaceCameraController.enableInputs = false;
+  scene.skyAtmosphere.show = true;
+  scene.fog.enabled = true;
+  scene.highDynamicRange = false;
+  viewer.clock.shouldAnimate = true;
+  viewer.clock.multiplier = 1;
+  // early afternoon local time (UTC+8 Taipei / UTC+9 Tokyo) for good sun on the city
+  viewer.clock.currentTime = C.JulianDate.fromIso8601("2026-05-02T05:00:00Z");
+  if (viewer.shadowMap) { viewer.shadowMap.maximumDistance = 600; viewer.shadowMap.softShadows = true; }
+
+  let tileset = null;
+  let demoMode = false;
+
+  async function initWorld() {
+    if (settings.key) {
+      try {
+        C.GoogleMaps.defaultApiKey = settings.key;
+        tileset = await C.createGooglePhotorealistic3DTileset(undefined, {
+          maximumScreenSpaceError: QUALITY.sse,
+          cacheBytes: QUALITY.cacheBytes,
+          showCreditsOnScreen: true,
+          dynamicScreenSpaceError: true,
+          preferLeaves: false
+        });
+        scene.primitives.add(tileset);
+        scene.globe.show = false;
+        return;
+      } catch (e) {
+        console.error(e);
+        setStatus("Google 3D Tiles failed to load: " + (e.message || e) + ". Check the API key and that the Map Tiles API is enabled. Running in demo mode.", true);
+      }
+    } else {
+      setStatus("No Google Maps API key yet: running in demo mode on a flat grid. Add your key in Settings to load the real 3D cities.", true);
+    }
+    demoMode = true;
+    scene.globe.show = true;
+    scene.globe.baseColor = C.Color.fromCssColorString("#2b3442");
+    viewer.imageryLayers.addImageryProvider(new C.GridImageryProvider({
+      cells: 8, color: C.Color.fromCssColorString("#7dffb0").withAlpha(0.35),
+      glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.fromCssColorString("#1d2633"), tileWidth: 256, tileHeight: 256
+    }));
+  }
+
+  function setStatus(msg, warn) { const s = $("status"); s.textContent = msg || ""; s.classList.toggle("warn", !!warn); }
+
+  // ---- helpers ---------------------------------------------------------------
+  const scratchCarto = new C.Cartographic();
+  function groundHeightAt(lon, lat, exclude) {
+    // height of the rendered surface (roof, street or terrain) below this point, metres above ellipsoid
+    if (!scene.sampleHeightSupported) return undefined;
+    scratchCarto.longitude = lon * DEG; scratchCarto.latitude = lat * DEG; scratchCarto.height = 0;
+    if (demoMode) return 0;
+    try { return scene.sampleHeight(scratchCarto, exclude, 1.5); } catch (e) { return undefined; }
+  }
+  function offsetLL(lat, lon, east, north) {
+    return { lat: lat + (north / R_EARTH) / DEG, lon: lon + (east / (R_EARTH * Math.cos(lat * DEG))) / DEG };
+  }
+  function modelMatrixFor(lat, lon, h, azimuthDeg, pitch, roll, pivot) {
+    const center = C.Cartesian3.fromDegrees(lon, lat, h + (pivot || 0));
+    const hpr = new C.HeadingPitchRoll((azimuthDeg - 90) * DEG, pitch || 0, roll || 0); // Cesium heading 0 = +X east
+    const m = C.Transforms.headingPitchRollToFixedFrame(center, hpr);
+    if (pivot) C.Matrix4.multiply(m, C.Matrix4.fromTranslation(new C.Cartesian3(0, 0, -pivot)), m);
+    return m;
+  }
+  async function loadModel(url, matrix, opts) {
+    const model = await C.Model.fromGltfAsync(Object.assign({
+      url, modelMatrix: matrix, scale: 1.0, forwardAxis: C.Axis.X, upAxis: C.Axis.Y, minimumPixelSize: 0, maximumScale: 1.0,
+      shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED,
+      backFaceCulling: false
+    }, opts || {}));
+    scene.primitives.add(model);
+    return model;
+  }
+  function waitForTiles(timeoutMs) {
+    return new Promise((resolve) => {
+      if (!tileset) return resolve();
+      const t0 = performance.now();
+      const tick = () => {
+        if (tileset.tilesLoaded || performance.now() - t0 > timeoutMs) return resolve();
+        setTimeout(tick, 200);
+      };
+      setTimeout(tick, 400);
+    });
+  }
+  function fade(on) { $("fade").classList.toggle("on", on); return new Promise((r) => setTimeout(r, 650)); }
+
+  // ---- start screen (game hall) at Nangang Exhibition Center ---------------
+  const lobby = { models: [], entities: [], lat: 0, lon: 0, ground: 0, heading: 0, orbit: 0, active: false };
+
+  async function findOpenGround(lat0, lon0, radius) {
+    // Look for flat, open ground (a plaza or wide road) near the requested point by
+    // sampling the 3D tiles. A spot is "open" when a 20 m ring around it is level with it.
+    if (demoMode || !tileset) return { lat: lat0, lon: lon0, h: 0 };
+    const pts = [], meta = [];
+    const step = 25;
+    for (let y = -radius; y <= radius; y += step) for (let x = -radius; x <= radius; x += step) {
+      if (x * x + y * y > radius * radius) continue;
+      const c = offsetLL(lat0, lon0, x, y); pts.push(C.Cartographic.fromDegrees(c.lon, c.lat)); meta.push({ x, y, ...c });
+    }
+    let res;
+    try { res = await scene.sampleHeightMostDetailed(pts); } catch (e) { return { lat: lat0, lon: lon0, h: 0 }; }
+    const hs = res.map((p) => (p && isFinite(p.height) ? p.height : NaN));
+    const valid = hs.filter((h) => isFinite(h)); if (!valid.length) return { lat: lat0, lon: lon0, h: 0 };
+    valid.sort((a, b) => a - b);
+    const streetLevel = valid[Math.floor(valid.length * 0.15)];
+    // candidates near street level, then check a ring of 8 points at 20 m
+    const cands = meta.map((m, i) => ({ ...m, h: hs[i], d: Math.hypot(m.x, m.y) }))
+      .filter((m) => isFinite(m.h) && Math.abs(m.h - streetLevel) < 2.5).sort((a, b) => a.d - b.d).slice(0, 24);
+    for (const c of cands) {
+      const ring = []; for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; const o = offsetLL(c.lat, c.lon, 20 * Math.cos(a), 20 * Math.sin(a)); ring.push(C.Cartographic.fromDegrees(o.lon, o.lat)); }
+      let rr; try { rr = await scene.sampleHeightMostDetailed(ring); } catch (e) { continue; }
+      if (rr.every((p) => p && isFinite(p.height) && Math.abs(p.height - c.h) < 1.8)) return c;
+    }
+    return cands[0] || { lat: lat0, lon: lon0, h: streetLevel };
+  }
+
+  async function buildLobby() {
+    const L = CFG.lobby || { lat: 25.0556, lon: 121.6176, searchRadius: 250, heading: 0 };
+    camera.setView({ destination: C.Cartesian3.fromDegrees(L.lon, L.lat - 0.0025, 260), orientation: { heading: 0, pitch: -30 * DEG, roll: 0 } });
+    await waitForTiles(12000);
+    const spot = await findOpenGround(L.lat, L.lon, L.searchRadius || 250);
+    lobby.lat = spot.lat; lobby.lon = spot.lon; lobby.ground = spot.h || 0; lobby.heading = L.heading || 0;
+    const H = lobby.heading;
+
+    // Gundam on the pull-up bar (faces azimuth H)
+    const gm = await loadModel("models/gundam_rx78_pullup_18m.glb", modelMatrixFor(lobby.lat, lobby.lon, lobby.ground, H), { forwardAxis: C.Axis.Z }); // this file faces +Z
+    gm.readyEvent.addEventListener(() => gm.activeAnimations.addAll({ loop: C.ModelAnimationLoop.REPEAT, multiplier: 1.0 }));
+    lobby.models.push(gm);
+
+    // Pull-up frame: two posts and a bar, true size (bar centre 22.07 m above ground)
+    const fwd = { e: Math.sin(H * DEG), n: Math.cos(H * DEG) }, right = { e: Math.cos(H * DEG), n: -Math.sin(H * DEG) };
+    const at = (f, r) => offsetLL(lobby.lat, lobby.lon, fwd.e * f + right.e * r, fwd.n * f + right.n * r);
+    const orient = (p, hgt) => C.Transforms.headingPitchRollQuaternion(C.Cartesian3.fromDegrees(p.lon, p.lat, hgt), new C.HeadingPitchRoll((H - 90) * DEG, 0, 0));
+    const steel = new C.ColorMaterialProperty(C.Color.fromCssColorString("#3d4552"));
+    const yellow = new C.ColorMaterialProperty(C.Color.fromCssColorString("#d9a514"));
+    for (const side of [-1, 1]) {
+      const p = at(BAR_FORWARD, side * POST_SPAN);
+      const postH = BAR_HEIGHT + 1.2;
+      lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(p.lon, p.lat, lobby.ground + postH / 2), orientation: orient(p, lobby.ground + postH / 2),
+        box: { dimensions: new C.Cartesian3(1.0, 1.0, postH), material: steel } }));
+      lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(p.lon, p.lat, lobby.ground + 0.3), orientation: orient(p, lobby.ground + 0.3),
+        box: { dimensions: new C.Cartesian3(4.0, 3.0, 0.6), material: yellow } }));
+    }
+    const bc = at(BAR_FORWARD, 0);
+    lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(bc.lon, bc.lat, lobby.ground + BAR_HEIGHT), orientation: orient(bc, lobby.ground + BAR_HEIGHT),
+      box: { dimensions: new C.Cartesian3(0.7, BAR_LENGTH + 1.0, 0.7), material: new C.ColorMaterialProperty(C.Color.fromCssColorString("#9aa3ad")) } }));
+    // safety mat under the Gundam
+    const mc = at(0, 0);
+    lobby.entities.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(mc.lon, mc.lat, lobby.ground + 0.08), orientation: orient(mc, lobby.ground + 0.08),
+      box: { dimensions: new C.Cartesian3(16, 16, 0.16), material: new C.ColorMaterialProperty(C.Color.fromCssColorString("#26324a")) } }));
+
+    // Pilots watching, 14–24 m in front of the mobile suit, facing it
+    const variants = ["stand", "point", "hips", "helmetless", "cross"];
+    const crowd = [
+      [14, -5], [15, 0.5], [14.5, 4.5], [17, -9], [18, 8.5], [19.5, -2.5], [20, 3], [22, -6], [23, 7], [16.5, 11.5], [21, -12], [24.5, 0]
+    ];
+    for (let i = 0; i < crowd.length; i++) {
+      const [f, r] = crowd[i];
+      const p = at(f, r);
+      const ph = groundHeightAt(p.lon, p.lat, lobby.models) ?? lobby.ground;
+      const faceAz = Math.atan2(-(fwd.e * f + right.e * r), -(fwd.n * f + right.n * r)) / DEG + (i % 3 - 1) * 8;
+      const m = await loadModel("models/pilot_" + variants[i % variants.length] + ".glb", modelMatrixFor(p.lat, p.lon, Math.abs(ph - lobby.ground) < 1.5 ? ph : lobby.ground, faceAz));
+      lobby.models.push(m);
+    }
+    lobby.active = true;
+    $("scaleCard").innerHTML =
+      "<b>True scale on this screen</b><br>Gundam (head height): <b>18.0 m</b> · Pilots: <b>1.75 m</b> (≈ 1/10 of the Gundam)<br>" +
+      "Pull-up bar: <b>22.1 m</b> high · " + (demoMode ? "Demo grid (no city)" : "Real buildings: Google 3D Tiles");
+  }
+
+  function lobbyCamera(dt) {
+    lobby.orbit += dt * 4 * DEG;
+    const target = C.Cartesian3.fromDegrees(lobby.lon, lobby.lat, lobby.ground + 12);
+    camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target),
+      new C.HeadingPitchRange(lobby.heading * DEG + Math.PI + Math.sin(lobby.orbit) * 0.9 + look.yaw, -8 * DEG + look.pitch, 58 * look.zoom));
+  }
+
+  // ---- input ------------------------------------------------------------------
+  const keys = new Set();
+  const input = { fwd: 0, strafe: 0, turn: 0, vert: 0, boost: false, lookX: 0, lookY: 0 };
+  const look = { yaw: 0, pitch: 0, zoom: 1 };
+  window.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT")) return;
+    keys.add(e.code);
+    if (e.code === "Space") e.preventDefault();
+    if (state.mode === "fly") {
+      if (e.code === "KeyV") cycleCamera();
+      if (e.code === "Escape") togglePause();
+    } else if (state.mode === "pause" && e.code === "Escape") togglePause();
+  });
+  window.addEventListener("keyup", (e) => keys.delete(e.code));
+  window.addEventListener("blur", () => keys.clear());
+
+  // mouse / touch look on the 3D canvas
+  const canvas = scene.canvas;
+  let dragId = null, lastX = 0, lastY = 0;
+  canvas.addEventListener("pointerdown", (e) => { dragId = e.pointerId; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== dragId) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY; lastX = e.clientX; lastY = e.clientY;
+    look.yaw += dx * 0.005; look.pitch += (settings.invertY ? 1 : -1) * dy * 0.004;
+    look.pitch = Math.max(-70 * DEG, Math.min(25 * DEG, look.pitch));
+  });
+  const endDrag = (e) => { if (e.pointerId === dragId) dragId = null; };
+  canvas.addEventListener("pointerup", endDrag); canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("wheel", (e) => { look.zoom = Math.max(0.35, Math.min(4, look.zoom * (e.deltaY > 0 ? 1.1 : 0.9))); e.preventDefault(); }, { passive: false });
+  canvas.addEventListener("dblclick", () => { look.yaw = 0; look.pitch = 0; look.zoom = 1; });
+
+  // virtual sticks
+  const sticks = {};
+  function setupStick(id) {
+    const el = $(id), knob = el.querySelector(".knob"); const s = { x: 0, y: 0, id: null };
+    const upd = (e) => {
+      const r = el.getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2, max = r.width / 2 - 20;
+      let dx = e.clientX - cx, dy = e.clientY - cy; const d = Math.hypot(dx, dy); if (d > max) { dx *= max / d; dy *= max / d; }
+      s.x = dx / max; s.y = dy / max; knob.style.transform = `translate(${dx}px, ${dy}px)`;
+    };
+    el.addEventListener("pointerdown", (e) => { s.id = e.pointerId; el.setPointerCapture(e.pointerId); upd(e); e.preventDefault(); });
+    el.addEventListener("pointermove", (e) => { if (e.pointerId === s.id) upd(e); });
+    const end = (e) => { if (e.pointerId !== s.id) return; s.id = null; s.x = 0; s.y = 0; knob.style.transform = ""; };
+    el.addEventListener("pointerup", end); el.addEventListener("pointercancel", end);
+    sticks[id] = s;
+  }
+  setupStick("stickL"); setupStick("stickR");
+  let touchBoost = false;
+  const bb = $("boostBtn");
+  bb.addEventListener("pointerdown", (e) => { touchBoost = true; bb.classList.add("on"); bb.setPointerCapture(e.pointerId); e.preventDefault(); });
+  const bbEnd = () => { touchBoost = false; bb.classList.remove("on"); };
+  bb.addEventListener("pointerup", bbEnd); bb.addEventListener("pointercancel", bbEnd);
+
+  // gamepad
+  let padPrev = {};
+  const dz = (v) => (Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85);
+  function readInput() {
+    const k = (c) => keys.has(c);
+    let fwd = (k("KeyW") || k("ArrowUp") ? 1 : 0) - (k("KeyS") || k("ArrowDown") ? 1 : 0);
+    let turn = (k("KeyD") || k("ArrowRight") ? 1 : 0) - (k("KeyA") || k("ArrowLeft") ? 1 : 0);
+    let strafe = (k("KeyE") ? 1 : 0) - (k("KeyQ") ? 1 : 0);
+    let vert = (k("Space") || k("KeyR") ? 1 : 0) - (k("KeyC") || k("KeyF") ? 1 : 0);
+    let boost = k("ShiftLeft") || k("ShiftRight");
+    let lookX = 0, lookY = 0;
+    const L = sticks.stickL, Rr = sticks.stickR;
+    if (L && (L.x || L.y)) { fwd += -L.y; turn += L.x; }
+    if (Rr && (Rr.x || Rr.y)) { vert += -Rr.y; strafe += Rr.x; }
+    if (touchBoost) boost = true;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const gp of pads) {
+      if (!gp || !gp.connected) continue;
+      const a = gp.axes, b = gp.buttons;
+      strafe += dz(a[0] || 0); fwd += -dz(a[1] || 0); turn += dz(a[2] || 0); lookY += dz(a[3] || 0);
+      const rt = b[7] ? b[7].value : 0, lt = b[6] ? b[6].value : 0; vert += rt - lt;
+      if (b[0] && b[0].pressed) boost = true;
+      if (b[12] && b[12].pressed) vert += 1; if (b[13] && b[13].pressed) vert -= 1;
+      const pressed = (i) => b[i] && b[i].pressed && !padPrev[gp.index + ":" + i];
+      if (state.mode === "fly" && pressed(3)) cycleCamera();
+      if (pressed(9)) togglePause();
+      const now = {}; b.forEach((x, i) => { if (x.pressed) now[gp.index + ":" + i] = 1; });
+      for (const kk in padPrev) if (kk.startsWith(gp.index + ":")) delete padPrev[kk];
+      Object.assign(padPrev, now);
+      break; // first active pad
+    }
+    const cl = (v) => Math.max(-1, Math.min(1, v));
+    input.fwd = cl(fwd); input.turn = cl(turn); input.strafe = cl(strafe); input.vert = cl(vert); input.boost = boost;
+    input.lookY = lookY;
+  }
+
+  // ---- flight -------------------------------------------------------------------
+  const MAX_FWD = 75, MAX_BACK = 20, MAX_STRAFE = 30, MAX_VERT = 28, BOOST = 2.4, TURN_RATE = 55 * DEG, MAX_ALT_AGL = 2500;
+  const fly = { model: null, lat: 0, lon: 0, h: 0, az: 0, vf: 0, vs: 0, vu: 0, yawRate: 0, lean: 0, bank: 0, ground: undefined, grounded: false, impactT: 0, cam: 0, spawn: null, frame: 0 };
+  const CAMS = [{ name: "CHASE CAM", range: 55, pitch: -10 }, { name: "FAR CAM", range: 160, pitch: -18 }, { name: "COCKPIT", range: 0, pitch: 0 }, { name: "SIDE CAM", range: 45, pitch: -4, yaw: 90 }];
+  function cycleCamera() { fly.cam = (fly.cam + 1) % CAMS.length; look.yaw = 0; look.pitch = 0; $("hudCam").textContent = CAMS[fly.cam].name; }
+
+  async function startFlight(spawn) {
+    await fade(true);
+    if (!fly.model) fly.model = await loadModel("models/gundam_rx78_18m.glb", C.Matrix4.IDENTITY);
+    placeAt(spawn);
+    state.mode = "fly";
+    lobby.active = false;
+    $("lobby").hidden = true; $("pause").hidden = true; $("hud").hidden = false; $("touch").hidden = !isTouch;
+    $("hudLoc").textContent = spawn.name;
+    look.yaw = 0; look.pitch = 0; look.zoom = 1;
+    updateFlight(0); updateCamera();
+    await fade(false);
+  }
+  function placeAt(spawn) {
+    fly.spawn = spawn;
+    fly.lat = spawn.lat; fly.lon = spawn.lon; fly.az = spawn.heading || 0;
+    fly.vf = fly.vs = fly.vu = 0; fly.yawRate = 0; fly.lean = fly.bank = 0;
+    fly.h = 40 + (spawn.alt || 150);  // Tokyo geoid ≈ +37 m; corrected to true AGL once tiles report ground
+    fly.needsAglFix = spawn.alt || 150;
+    fly.ground = undefined;
+  }
+
+  function updateFlight(dt) {
+    readInput();
+    const boost = input.boost ? BOOST : 1;
+    const resp = 1 - Math.exp(-dt * 2.2);
+    const tf = input.fwd >= 0 ? input.fwd * MAX_FWD * boost : input.fwd * MAX_BACK;
+    fly.vf += (tf - fly.vf) * resp;
+    fly.vs += (input.strafe * MAX_STRAFE * (input.boost ? 1.6 : 1) - fly.vs) * resp;
+    fly.vu += (input.vert * MAX_VERT * (input.boost ? 1.8 : 1) - fly.vu) * (1 - Math.exp(-dt * 3));
+    fly.yawRate += (input.turn * TURN_RATE - fly.yawRate) * (1 - Math.exp(-dt * 4));
+    fly.az = (fly.az + fly.yawRate / DEG * dt + 360) % 360;
+
+    // proposed move
+    const s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
+    let ve = fly.vf * s + fly.vs * c, vn = fly.vf * c - fly.vs * s;
+    const excl = [fly.model].filter(Boolean);
+
+    // ground under us (sampled every frame; cheap enough at 1.5 m footprint)
+    const g = groundHeightAt(fly.lon, fly.lat, excl);
+    if (g !== undefined && isFinite(g)) {
+      fly.ground = g;
+      if (fly.needsAglFix) { fly.h = g + fly.needsAglFix; fly.needsAglFix = 0; }
+    }
+
+    // collision with buildings ahead: probe along horizontal velocity
+    const hs = Math.hypot(ve, vn);
+    if (hs > 0.5 && fly.ground !== undefined && (fly.frame++ % 2 === 0 || hs > 40)) {
+      const dist = 6 + hs * 0.18, ue = ve / hs, un = vn / hs;
+      for (const side of [0, -1, 1]) {
+        const pe = ue * dist + (-un) * side * 3.5, pn = un * dist + ue * side * 3.5;
+        const p = offsetLL(fly.lat, fly.lon, pe, pn);
+        const ph = groundHeightAt(p.lon, p.lat, excl);
+        if (ph !== undefined && ph > fly.h + 3.0) { // a wall taller than a step: blocked
+          const into = ve * ue + vn * un;
+          if (into > 0) { ve -= into * ue; vn -= into * un; }
+          if (hs > 25) { fly.impactT = 0.7; }
+          // remove forward speed so we don't grind into the wall
+          fly.vf *= 0.4; fly.vs *= 0.6;
+          break;
+        }
+      }
+    }
+    const np = offsetLL(fly.lat, fly.lon, ve * dt, vn * dt);
+    fly.lat = np.lat; fly.lon = np.lon;
+    fly.h += fly.vu * dt;
+    if (fly.ground !== undefined) {
+      if (fly.h <= fly.ground + 0.02) { fly.h = fly.ground; if (fly.vu < 0) fly.vu = 0; fly.grounded = true; } else fly.grounded = false;
+      if (fly.h > fly.ground + MAX_ALT_AGL) { fly.h = fly.ground + MAX_ALT_AGL; fly.vu = Math.min(fly.vu, 0); }
+    }
+
+    // body attitude: lean into motion, bank into turns (only when airborne)
+    const air = fly.grounded ? 0.15 : 1;
+    const targetLean = (fly.vf / (MAX_FWD * BOOST)) * 55 * DEG * air;
+    const targetBank = (fly.yawRate / TURN_RATE) * 22 * DEG * air + (fly.vs / MAX_STRAFE) * 12 * DEG * air;
+    const k = 1 - Math.exp(-dt * 3);
+    fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k;
+    if (fly.model) fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, MS_CENTER);
+    fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
+
+    if (fly.impactT > 0) fly.impactT -= dt;
+    // HUD
+    const spd = Math.hypot(ve, vn, fly.vu) * 3.6;
+    const agl = fly.ground !== undefined ? fly.h - fly.ground : NaN;
+    $("hudSpeed").textContent = spd.toFixed(0);
+    $("hudThrust").style.width = Math.min(100, Math.abs(fly.vf) / (MAX_FWD * BOOST) * 100) + "%";
+    $("hudAgl").textContent = isFinite(agl) ? agl.toFixed(0) : "--";
+    $("hudAglMs").textContent = isFinite(agl) ? (agl / MS_HEIGHT).toFixed(1) + " × MS height" : "";
+    $("hudElev").textContent = (fly.h - (demoMode ? 0 : 37)).toFixed(0);
+    $("hudVs").textContent = fly.vu.toFixed(1);
+    $("hudMode").textContent = fly.grounded ? "LANDED" : input.boost ? "BOOST" : "HOVER";
+    $("impact").classList.toggle("on", fly.impactT > 0);
+    $("loadingTiles").classList.toggle("on", !!tileset && !tileset.tilesLoaded && fly.ground === undefined);
+    drawCompass();
+  }
+
+  function updateCamera() {
+    const cam = CAMS[fly.cam];
+    look.pitch = Math.max(-70 * DEG, Math.min(25 * DEG, look.pitch + input.lookY * (settings.invertY ? -1 : 1) * 0.03));
+    if (cam.range === 0) {
+      // cockpit: eye at head height, looking forward
+      camera.lookAtTransform(C.Matrix4.IDENTITY);
+      const s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
+      const eye = offsetLL(fly.lat, fly.lon, s * 1.5, c * 1.5);
+      camera.setView({ destination: C.Cartesian3.fromDegrees(eye.lon, eye.lat, fly.h + 16.6),
+        orientation: { heading: fly.az * DEG + look.yaw, pitch: -fly.lean * 0.5 + look.pitch, roll: fly.bank * 0.5 } });
+      return;
+    }
+    const target = C.Cartesian3.fromDegrees(fly.lon, fly.lat, fly.h + MS_CENTER + 2);
+    let range = cam.range * look.zoom;
+    let pitch = cam.pitch * DEG + look.pitch;
+    // keep the camera above street level
+    if (fly.ground !== undefined) {
+      const camUp = MS_CENTER + 2 - Math.sin(-pitch) * range;
+      if (fly.h + camUp < fly.ground + 2) pitch = -Math.asin(Math.min(1, (fly.h + MS_CENTER + 2 - fly.ground - 2) / range));
+    }
+    camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target),
+      new C.HeadingPitchRange(fly.az * DEG + (cam.yaw || 0) * DEG + look.yaw, pitch, range));
+  }
+
+  function drawCompass() {
+    const tape = $("compassTape");
+    if (!tape.childElementCount) {
+      const lbl = (d) => ({ 0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S", 225: "SW", 270: "W", 315: "NW" }[d] || String(d));
+      let html = ""; for (let r = 0; r < 3; r++) for (let d = 0; d < 360; d += 15) html += `<span>${lbl(d)}</span>`;
+      tape.innerHTML = html;
+    }
+    const w = tape.parentElement.clientWidth;
+    tape.style.left = (w / 2 - 15 - (360 + fly.az) / 15 * 30) + "px";
+  }
+
+  // ---- main loop ------------------------------------------------------------
+  const state = { mode: "lobby" };
+  let last = performance.now(), fpsAcc = 0, fpsN = 0;
+  scene.preUpdate.addEventListener(() => {
+    const now = performance.now(); const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    if (state.mode === "fly") { updateFlight(dt); updateCamera(); }
+    else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); }
+    else if (state.mode === "pause") readInput();
+    if (settings.showFps) { fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { $("hudFps").textContent = " · " + (fpsN / fpsAcc).toFixed(0) + " fps"; fpsAcc = 0; fpsN = 0; } }
+  });
+
+  function togglePause() {
+    if (state.mode === "fly") { state.mode = "pause"; $("pause").hidden = false; $("touch").hidden = true; viewer.clock.shouldAnimate = false; }
+    else if (state.mode === "pause") { state.mode = "fly"; $("pause").hidden = true; $("touch").hidden = !isTouch; viewer.clock.shouldAnimate = true; last = performance.now(); }
+  }
+
+  // ---- UI wiring ----------------------------------------------------------------
+  const spawns = CFG.spawns || [];
+  for (const sel of [$("spawnSelect"), $("teleportSelect")]) spawns.forEach((s, i) => sel.add(new Option(s.name, i)));
+  $("startBtn").onclick = () => startFlight(spawns[+$("spawnSelect").value] || spawns[0]);
+  $("resumeBtn").onclick = togglePause;
+  $("teleportBtn").onclick = () => { placeAt(spawns[+$("teleportSelect").value]); $("hudLoc").textContent = fly.spawn.name; togglePause(); };
+  $("toLobbyBtn").onclick = async () => {
+    await fade(true);
+    state.mode = "lobby"; viewer.clock.shouldAnimate = true;
+    $("pause").hidden = true; $("hud").hidden = true; $("touch").hidden = true; $("lobby").hidden = false;
+    if (fly.model) fly.model.show = false;
+    lobby.active = true; look.yaw = 0; look.pitch = 0; look.zoom = 1;
+    await fade(false);
+  };
+  $("camBtn").onclick = cycleCamera;
+  $("menuBtn").onclick = togglePause;
+  const openSettings = () => {
+    $("keyInput").value = settings.key; $("qualitySelect").value = settings.quality;
+    $("invertY").checked = settings.invertY; $("showFps").checked = settings.showFps; $("settingsDlg").showModal();
+  };
+  $("settingsBtn").onclick = openSettings; $("pSettingsBtn").onclick = openSettings;
+  $("saveSettings").onclick = () => {
+    store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
+    store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked);
+    setTimeout(() => location.reload(), 50);
+  };
+  $("helpBtn").onclick = () => $("helpDlg").showModal(); $("pHelpBtn").onclick = () => $("helpDlg").showModal();
+  $("creditsBtn").onclick = () => $("creditsDlg").showModal();
+
+  // service worker (installable app on Windows and Android)
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+
+  // expose for debugging / automated tests
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get tileset() { return tileset; } };
+
+  (async () => {
+    $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";
+    await initWorld();
+    try { await buildLobby(); } catch (e) { console.error(e); setStatus("Could not build the start scene: " + (e.message || e), true); }
+    $("startBtn").disabled = false; $("startBtn").textContent = "Launch";
+    window.GFS.ready = true;
+  })();
+})();

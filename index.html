@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e1b34">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Gundam Flight Simulator</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+<div id="cesiumContainer"></div>
+<div id="fade"></div>
+
+<!-- Start screen (game hall) -->
+<section id="lobby" class="panel-layer">
+  <div class="lobby-card">
+    <div class="kicker">Nangang Exhibition Center · Taipei</div>
+    <h1>Gundam Flight Simulator</h1>
+    <p class="sub">Fly the RX-78-02 over and between the towers of Tokyo. Everything is true scale: the mobile suit stands 18.0 m, pilots 1.75 m, buildings are Google's real 3D city.</p>
+    <label class="field">Starting point in Tokyo
+      <select id="spawnSelect"></select>
+    </label>
+    <button id="startBtn" class="primary">Launch</button>
+    <div class="row">
+      <button id="settingsBtn">Settings</button>
+      <button id="helpBtn">Controls</button>
+      <button id="creditsBtn">Credits</button>
+    </div>
+    <div id="scaleCard" class="scale-card"></div>
+    <div id="status" class="status"></div>
+  </div>
+</section>
+
+<!-- In-flight HUD -->
+<section id="hud" hidden>
+  <div class="hud-top">
+    <div class="compass"><div id="compassTape"></div><div class="compass-mark"></div></div>
+  </div>
+  <div class="hud-left">
+    <div class="hud-k">SPD</div><div class="hud-v"><span id="hudSpeed">0</span> <small>km/h</small></div>
+    <div class="hud-k">THR</div><div class="bar"><div id="hudThrust"></div></div>
+  </div>
+  <div class="hud-right">
+    <div class="hud-k">ALT AGL</div><div class="hud-v"><span id="hudAgl">0</span> <small>m</small></div>
+    <div class="hud-small" id="hudAglMs">0.0 × MS height</div>
+    <div class="hud-k">ELEV</div><div class="hud-v small"><span id="hudElev">0</span> <small>m</small></div>
+    <div class="hud-k">V/S</div><div class="hud-v small"><span id="hudVs">0</span> <small>m/s</small></div>
+  </div>
+  <div class="hud-bottom">
+    <span id="hudMode">HOVER</span> · <span id="hudCam">CHASE CAM</span> · <span id="hudLoc"></span> <span id="hudFps"></span>
+  </div>
+  <div id="impact" class="impact">IMPACT</div>
+  <div id="loadingTiles" class="loading-tiles">Loading city…</div>
+  <button id="menuBtn" class="hud-btn" title="Menu (Esc)">☰</button>
+  <button id="camBtn" class="hud-btn" title="Camera (V)">◎</button>
+</section>
+
+<!-- Touch controls (Android / touch screens) -->
+<section id="touch" hidden>
+  <div class="stick" id="stickL"><div class="knob"></div><span>MOVE / TURN</span></div>
+  <div class="stick" id="stickR"><div class="knob"></div><span>UP·DOWN / STRAFE</span></div>
+  <button id="boostBtn" class="touch-btn">BOOST</button>
+</section>
+
+<!-- Pause menu -->
+<section id="pause" class="panel-layer" hidden>
+  <div class="lobby-card">
+    <h2>Paused</h2>
+    <button id="resumeBtn" class="primary">Resume</button>
+    <label class="field">Teleport to
+      <select id="teleportSelect"></select>
+    </label>
+    <button id="teleportBtn">Teleport</button>
+    <div class="row">
+      <button id="pSettingsBtn">Settings</button>
+      <button id="pHelpBtn">Controls</button>
+      <button id="toLobbyBtn">Start screen</button>
+    </div>
+  </div>
+</section>
+
+<!-- Dialogs -->
+<dialog id="settingsDlg">
+  <form method="dialog">
+    <h2>Settings</h2>
+    <label class="field">Google Maps Platform API key (Map Tiles API enabled)
+      <input id="keyInput" type="password" autocomplete="off" placeholder="AIza…">
+    </label>
+    <p class="note">Stored only in this browser. Restrict the key in Google Cloud to your site's address and to the Map Tiles API.</p>
+    <label class="field">Graphics quality
+      <select id="qualitySelect">
+        <option value="low">Low (phones)</option>
+        <option value="medium">Medium</option>
+        <option value="high">High (desktop GPU)</option>
+      </select>
+    </label>
+    <label class="check"><input id="invertY" type="checkbox"> Invert camera up/down</label>
+    <label class="check"><input id="showFps" type="checkbox"> Show FPS</label>
+    <div class="row"><button value="cancel">Close</button><button id="saveSettings" value="save" class="primary">Save &amp; reload</button></div>
+  </form>
+</dialog>
+
+<dialog id="helpDlg">
+  <form method="dialog">
+    <h2>Controls</h2>
+    <div class="help-grid">
+      <div><h3>Keyboard + mouse (Windows)</h3>
+        <ul>
+          <li><b>W / S</b> or <b>↑ / ↓</b> forward / back</li>
+          <li><b>A / D</b> or <b>← / →</b> turn</li>
+          <li><b>Q / E</b> strafe left / right</li>
+          <li><b>Space</b> ascend · <b>C</b> descend</li>
+          <li><b>Shift</b> boost</li>
+          <li><b>V</b> camera · mouse drag to look · wheel to zoom</li>
+          <li><b>Esc</b> pause menu</li>
+        </ul></div>
+      <div><h3>Gamepad (Xbox-style)</h3>
+        <ul>
+          <li>Left stick: forward / strafe</li>
+          <li>Right stick: turn / look up-down</li>
+          <li>RT ascend · LT descend</li>
+          <li>A (hold) boost · Y camera · Start pause</li>
+        </ul></div>
+      <div><h3>Touch (Android)</h3>
+        <ul>
+          <li>Left stick: forward/back and turn</li>
+          <li>Right stick: up/down and strafe</li>
+          <li>BOOST (hold) · ◎ camera · ☰ menu</li>
+          <li>Drag empty screen to look around</li>
+        </ul></div>
+    </div>
+    <div class="row"><button value="close" class="primary">OK</button></div>
+  </form>
+</dialog>
+
+<dialog id="creditsDlg">
+  <form method="dialog">
+    <h2>Credits</h2>
+    <p>3D model: "ガンダム（THE ORIGIN版)/Gundam(THE ORIGIN ver)" by みそ太郎 (<a href="https://sketchfab.com/nama_140" target="_blank" rel="noopener">sketchfab.com/nama_140</a>), licensed under <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC-BY-4.0</a>. <a href="https://sketchfab.com/3d-models/the-origingundamthe-origin-ver-b1fbcc97214a431bbc024f7bc929c41a" target="_blank" rel="noopener">Source</a>. Modified: rescaled to 18.0 m, rifle and shield placed in hand, pull-up animation added.</p>
+    <p>City: Google Photorealistic 3D Tiles (Map Tiles API). Map data attributions are shown at the bottom of the screen.</p>
+    <p>Rendering: CesiumJS (Apache-2.0).</p>
+    <p>Pilot figures: original low-poly models made for this simulator.</p>
+    <div class="row"><button value="close" class="primary">OK</button></div>
+  </form>
+</dialog>
+
+<script src="js/app.js"></script>
+</body>
+</html>
