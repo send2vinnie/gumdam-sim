@@ -760,6 +760,8 @@ void main() {
 
   // ---- pick the character on the start screen by clicking / tapping it ----
   const lobbyPickables = () => [lobby.dragon, lobby.trainer].filter(Boolean);
+  // x, y: CSS pixels from the canvas corner. scene.pick converts to drawing-buffer pixels itself, so they must not be
+  // pre-scaled (the drawing buffer is smaller than the page when the resolution scale or automatic resolution is below 100 %).
   function pickedCharacter(x, y) {
     let picked; try { picked = scene.pick(new C.Cartesian2(x, y)); } catch (e) { picked = undefined; }
     const prim = picked && picked.primitive;
@@ -840,7 +842,7 @@ void main() {
     if (e.pointerType !== "mouse" || state.mode !== "lobby" || tap) return;
     if (e.timeStamp - hoverT < 120) return; hoverT = e.timeStamp;
     const r = canvas.getBoundingClientRect();
-    canvas.style.cursor = pickedCharacter((e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height)) ? "pointer" : "";
+    canvas.style.cursor = pickedCharacter(e.clientX - r.left, e.clientY - r.top) ? "pointer" : "";
   });
   canvas.addEventListener("pointerup", (e) => {
     const t = tap; tap = null;
@@ -853,7 +855,7 @@ void main() {
     if (moved > (e.pointerType === "touch" ? 12 : 8) || e.timeStamp - t.t > 500) return;
     // tapping a character selects it; tapping anywhere else hides / shows the panel
     const r = canvas.getBoundingClientRect();
-    const ch = pickedCharacter((e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height));
+    const ch = pickedCharacter(e.clientX - r.left, e.clientY - r.top);
     if (ch) { selectCharacter(ch); return; }
     const off = !$("lobby").classList.contains("panel-off");
     if (!off) setLobbyCollapsed(true);
