@@ -12,8 +12,10 @@ const DRAGON_HEIGHT_M = +(dhS || 4.0), DRAGON_NATIVE_H = 18.16, RIDER_NATIVE_H =
 const k = (RIDER_M / DRAGON_HEIGHT_M * DRAGON_NATIVE_H) / RIDER_NATIVE_H;   // rider native unit -> dragon native unit
 const DEG = Math.PI / 180;
 // rider pose parameters (rider native: x fwd, y left, z up)
-const P = { lean: 38 * DEG, headUp: -22 * DEG, thigh: -62 * DEG, splay: 34 * DEG, knee: 72 * DEG, kneeIn: 14 * DEG,
-  seat: [12.9, 6.05, 0], seatLift: 0.25, gripBack: 0.35 }; // seat on the lower neck (flight frame), lift above the neck top
+const P = { lean: 46 * DEG, headUp: -22 * DEG, thigh: -25 * DEG, splay: 52 * DEG, knee: 85 * DEG, kneeIn: 0,
+  seat: [12.9, 6.05, 0], seatNy: -1.8, seatLift: 1.3, gripBack: 0.35 };   // verified: no leg/neck penetration in any head pose, min gap 1.7 cm // seat on the lower neck (flight frame), lift above the neck top
+if (process.env.RIDER_POSE) { const o = JSON.parse(process.env.RIDER_POSE); for (const [kk, v] of Object.entries(o)) P[kk] = ["seat", "seatNy", "seatLift", "gripBack"].includes(kk) ? v : v * DEG; }
+const CHECK_ONLY = !!process.env.CHECK_ONLY;
 const HIP_Z = 8.4, HIP_Y = 0.95, KNEE_Z = 4.4, SH_Z = 13.1, SH_Y = 2.15, EL_Y = 5.0, PALM_Y = 7.9, NECK_Z = 14.7;
 const ss = L.ss;
 const add = (a, b) => a.map((x, i) => x + b[i]), sub = (a, b) => a.map((x, i) => x - b[i]), mul = (a, s) => a.map((x) => x * s);
@@ -44,12 +46,21 @@ const origin = [torso[0], minY, torso[2]];
 // ---------------- rider: pose in its own frame, then place on the neck ----------------
 const R = L.loadGltf(rDir);
 // flight frame (unshifted) <-> rider native
+// seat: top of the lower neck in the rest pose (flight frame), measured from the mesh
+{ const top = []; prims.forEach((q) => { if (q.mi !== 3) return; q.P.forEach((v, i) => { if (Math.abs(v[1] - P.seatNy) <= 0.35 && v[2] > 10 && Math.abs(v[0]) < 0.6) top.push(L.toGl(L.pitchP(L.deform(v, q.W5[i])))); }); });
+  const t0 = top.reduce((b, p) => (p[1] > b[1] ? p : b), top[0]); P.seat = [t0[0], t0[1], 0]; }
 const seatF = [P.seat[0], P.seat[1] + P.seatLift, P.seat[2]];
 let seatZr = 0; // rider native z of the seat (bottom of pelvis after posing), set below
 const riderToFlight = (p) => [seatF[0] + k * p[0], seatF[1] + k * (p[2] - seatZr), seatF[2] - k * p[1]];
 const flightToRider = (f) => [(f[0] - seatF[0]) / k, -(f[2] - seatF[2]) / k, (f[1] - seatF[1]) / k + seatZr];
 // horn grip targets (flight frame, from the dragon mesh): a bit down the horn from the tip, toward the skull
-const hornTipF = { L: [14.98, 9.84, -1.39], R: [14.98, 9.84, 1.39] }, hornBaseF = { L: [15.82, 8.12, -0.48], R: [15.82, 8.12, 0.48] };
+// measured from the mesh (rest pose, flight frame): tip = highest/back-most horn point, base = lowest horn point
+const hornTipF = {}, hornBaseF = {};
+for (const [side, key] of [[1, "L"], [-1, "R"]]) {
+  const hp = []; prims.forEach((q) => { if (q.mi !== 3) return; q.P.forEach((v, i) => { if (q.W5[i][1] > 0.9 && v[2] > 16.6 && v[0] * side > 0.35 && v[1] > -6.3) hp.push([v, q.W5[i]]); /* horn only, not the forehead */ }); });
+  const tip = hp.reduce((b, e) => (e[0][2] + 0.5 * e[0][1] > b[0][2] + 0.5 * b[0][1] ? e : b), hp[0]), base = hp.reduce((b, e) => (e[0][2] < b[0][2] ? e : b), hp[0]);
+  hornTipF[key] = L.toGl(L.pitchP(L.deform(tip[0], tip[1]))); hornBaseF[key] = L.toGl(L.pitchP(L.deform(base[0], base[1])));
+}
 // torso lean / neck tilt transforms (rider native)
 const lean = (p) => rot(p, [0, 0, HIP_Z], [0, 1, 0], P.lean);
 // first pass: pose legs + torso to find the seat height (pelvis bottom)
@@ -115,6 +126,12 @@ function inv4(a) { const det = a[0] * (a[5] * a[10] - a[9] * a[6]) - a[4] * (a[1
 const m4v = (m, v) => [m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12], m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13], m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14]];
 const m4n = (m, v) => nrm([m[0] * v[0] + m[4] * v[1] + m[8] * v[2], m[1] * v[0] + m[5] * v[1] + m[9] * v[2], m[2] * v[0] + m[6] * v[1] + m[10] * v[2]]);
 const toNative = (f) => L.unpitch(L.fromGl(f)), toNativeN = (f) => L.unpitch(L.fromGl(f));
+// legs and hips take the joint weights of the nearest dragon vertex (rest pose), so they move with the neck surface
+const dragonRest = []; prims.filter((q) => q.src === "dragon").forEach((q) => q.P.forEach((v, i) => { const w = q.W5[i]; if (w[2] + w[3] + w[4] < 0.01) dragonRest.push({ f: L.toGl(L.pitchP(L.deform(v, w))), w }); }));
+const nearSeat = dragonRest.filter((d) => Math.abs(d.f[0] - seatF[0]) < 4 && Math.abs(d.f[1] - seatF[1]) < 5);
+function legWeights(p, f) { const t = ss(8.6, 9.8, p[2]); if (t >= 1) return [1, 0, 0, 0, 0];
+  let best = null, bd = Infinity; for (const d of nearSeat) { const dd = (d.f[0] - f[0]) ** 2 + (d.f[1] - f[1]) ** 2 + (d.f[2] - f[2]) ** 2; if (dd < bd) { bd = dd; best = d; } }
+  const w = best ? best.w : [1, 0, 0, 0, 0]; return w.map((v, k) => (1 - t) * v + t * (k === 0 ? 1 : 0)); }
 const riderFlightPts = [];
 for (const q of RP) {
   const P2 = [], N2 = [], W5 = [];
@@ -122,12 +139,56 @@ for (const q of RP) {
     const [pp, nn] = poseRider(p, q.N0[i]);
     const f = riderToFlight(pp), fn = [nn[0], nn[2], -nn[1]];
     riderFlightPts.push(f);
-    const h = riderHeadW(p); const w = [1 - h, h, 0, 0, 0];
-    const B = JM[0].map((x, idx) => (1 - h) * x + h * JM[1][idx]); const Bi = inv4(B);
+    const h = riderHeadW(p); const w = h > 0 ? [1 - h, h, 0, 0, 0] : legWeights(p, f);
+    const JMt = L.jointMat(4); const B = JM[0].map((x, idx) => w[0] * x + w[1] * JM[1][idx] + (w[2] + w[3]) * x + w[4] * JMt[idx]); const Bi = inv4(B);
     P2.push(m4v(Bi, toNative(f))); N2.push(m4n(Bi, toNativeN(fn))); W5.push(w);
   });
   prims.push({ P: P2, N: N2, T: q.T, I: q.I, W5, material: q.material, src: "rider" });
 }
+
+// ---------------- penetration check: rider legs/hips vs the dragon surface, through head turns ----------------
+{
+  const qmulA = (a, b) => [a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0], a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+  const axq = (ax, an) => { const s2 = Math.sin(an / 2); return [ax[0] * s2, ax[1] * s2, ax[2] * s2, Math.cos(an / 2)]; };
+  const qrot = (q, v) => { const [x, y, z, w] = q; const ix = w * v[0] + y * v[2] - z * v[1], iy = w * v[1] + z * v[0] - x * v[2], iz = w * v[2] + x * v[1] - y * v[0], iw = -x * v[0] - y * v[1] - z * v[2];
+    return [ix * w + iw * -x + iy * -z - iz * -y, iy * w + iw * -y + iz * -x - ix * -z, iz * w + iw * -z + ix * -y - iy * -x]; };
+  const UP = [0, Math.sin(L.PITCH), Math.cos(L.PITCH)];
+  // rider leg points (body joint only) in the dragon native rest frame
+  const legs = [], legW = [], legBind = []; RP.forEach((qq) => qq.P0.forEach((p) => { if (p[2] < 9.2 && riderHeadW(p) === 0) { const f = riderToFlight(poseRider(p, [0, 0, 1])[0]); const w = legWeights(p, f); legs.push(toNative(f)); legW.push(w);
+    const JMt = L.jointMat(4); const B = JM[0].map((x, idx) => w[0] * x + w[1] * JM[1][idx] + (w[2] + w[3]) * x + w[4] * JMt[idx]); legBind.push(m4v(inv4(B), toNative(f))); } }));
+  const lb = [0, 1, 2].map((a) => [Math.min(...legs.map((p) => p[a])) - 2, Math.max(...legs.map((p) => p[a])) + 2]);
+  // dragon triangles near the legs (native), with their vertex weights
+  const tris = [];
+  prims.filter((q) => q.src === "dragon").forEach((q) => { for (let i = 0; i < q.I.length; i += 3) { const ids = [q.I[i], q.I[i + 1], q.I[i + 2]]; const vs = ids.map((id) => q.P[id]);
+    if (vs.every((v) => v.some((c2, a) => c2 < lb[a][0] || c2 > lb[a][1]))) continue; tris.push({ ids, vs, ws: ids.map((id) => q.W5[id]), ns: ids.map((id) => q.N[id]) }); } });
+  const cp = (p, a, b, c2) => { // closest point on triangle (Ericson)
+    const ab = sub(b, a), ac = sub(c2, a), ap = sub(p, a); const d1 = dot(ab, ap), d2 = dot(ac, ap); if (d1 <= 0 && d2 <= 0) return a;
+    const bp = sub(p, b), d3 = dot(ab, bp), d4 = dot(ac, bp); if (d3 >= 0 && d4 <= d3) return b; const vc = d1 * d4 - d3 * d2; if (vc <= 0 && d1 >= 0 && d3 <= 0) return add(a, mul(ab, d1 / (d1 - d3)));
+    const cpp = sub(p, c2), d5 = dot(ab, cpp), d6 = dot(ac, cpp); if (d6 >= 0 && d5 <= d6) return c2; const vb = d5 * d2 - d1 * d6; if (vb <= 0 && d2 >= 0 && d6 <= 0) return add(a, mul(ac, d2 / (d2 - d6)));
+    const va = d3 * d6 - d5 * d4; if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return add(b, mul(sub(c2, b), (d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    const den = 1 / (va + vb + vc); return add(a, add(mul(ab, vb * den), mul(ac, vc * den))); };
+  let worst = Infinity, worstPose = null, nInside = 0;
+  const YAWS = process.env.CHECK_QUICK ? [0] : [-21, -10, 0, 10, 21], PITCHES = process.env.CHECK_QUICK ? [0] : [-8.4, 0, 8.4];
+  for (const yaw of YAWS) for (const pitch of PITCHES) {
+    const qh = qmulA(axq(UP, -yaw * DEG), axq([1, 0, 0], -pitch * DEG * 0.8 + L.HEAD_REST));
+    const posed = (v, w) => { const hp = L.HEAD_P; const rh = add(hp, qrot(qh, sub(v, hp))); const rt = L.JR[4] ? (() => { const tp = L.TAIL_P; return add(tp, qrot(axq([1, 0, 0], L.JR[4]), sub(v, tp))); })() : v;
+      return [0, 1, 2].map((a) => w[0] * v[a] + w[1] * rh[a] + (w[2] + w[3]) * v[a] + w[4] * rt[a]); };
+    const T2 = tris.map((t) => ({ vs: t.vs.map((v, i) => posed(v, t.ws[i])), n: nrm(add(add(t.ns[0], t.ns[1]), t.ns[2])) }));
+    let minS = Infinity, inside = 0;
+    // legs move with their weights: pose their bind positions like the dragon
+    const legsPosed = legBind.map((b, i) => posed(b, legW[i]));
+    for (const p of legsPosed) { let best = Infinity, sgn = 1, bt = null; for (const t of T2) { const c3 = cp(p, t.vs[0], t.vs[1], t.vs[2]); const d = len(sub(p, c3)); if (d < best) { best = d; sgn = dot(sub(p, c3), t.n) >= 0 ? 1 : -1; bt = t; } }
+      const sd = best * sgn; if (sd < minS) { minS = sd; global.__worst = { p, f: sub(L.toGl(L.pitchP(p)), [0, 0, 0]), tri: bt.vs[0] }; } if (sd < 0) inside++; }
+    if (minS < worst) { worst = minS; worstPose = [yaw, pitch]; } nInside = Math.max(nInside, inside);
+  }
+  const toCm = (v) => (v * DRAGON_HEIGHT_M / DRAGON_NATIVE_H * 100).toFixed(1);
+  console.log(`seat ${P.seat.map((v) => v.toFixed(2)).join(",")} IK miss L ${ik[1].miss.toFixed(2)} R ${ik[-1].miss.toFixed(2)}`);
+  console.log(`legs vs dragon: ${legs.length} leg verts, ${tris.length} nearby triangles; worst signed gap ${toCm(worst)} cm at head yaw/pitch ${worstPose}; max verts inside ${nInside}`);
+  global.__legGap = worst * DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
+  if (process.env.CHECK_DEBUG) { const w = global.__worst; console.log("worst leg vertex native", w.p.map((v) => v.toFixed(2)).join(","), "flight", w.f.map((v) => v.toFixed(2)).join(","), "nearest dragon vertex native", w.tri.map((v) => v.toFixed(2)).join(","), "seatF", seatF.map((v) => v.toFixed(2)).join(","));
+    const lf = legs.map((p) => L.toGl(L.pitchP(p))); console.log("legs flight box", [0, 1, 2].map((a) => Math.min(...lf.map((p) => p[a])).toFixed(2) + ".." + Math.max(...lf.map((p) => p[a])).toFixed(2)).join(" | ")); }
+}
+if (CHECK_ONLY) process.exit(0);
 
 // ---------------- write GLB ----------------
 const M = (() => { const ex = L.toGl(L.pitchP([1, 0, 0])), ey = L.toGl(L.pitchP([0, 1, 0])), ez = L.toGl(L.pitchP([0, 0, 1])); return [...ex, 0, ...ey, 0, ...ez, 0, -origin[0], -origin[1], -origin[2], 1]; })();
@@ -182,6 +243,7 @@ let minClear = Infinity; const legF = []; RP.forEach((qq) => qq.P0.forEach((p) =
 const near = allF.filter((p) => Math.abs(p[0] - seatF[0]) < 3 && Math.abs(p[1] - seatF[1]) < 4);
 let inside = 0; for (const lp of legF) { let dmin = Infinity; for (const np of near) dmin = Math.min(dmin, Math.hypot(lp[0] - np[0], lp[1] - np[1], lp[2] - np[2])); minClear = Math.min(minClear, dmin); }
 console.log(`${out}: ${(total / 1024).toFixed(0)} KB, k=${k.toFixed(3)} (rider ${RIDER_M} m on a ${DRAGON_HEIGHT_M} m dragon)`);
+console.log(`seat (neck top, flight frame) ${P.seat.map((v) => v.toFixed(2)).join(",")}, lift ${P.seatLift}`);
 console.log(`arm IK miss L ${ik[1].miss.toFixed(2)} R ${ik[-1].miss.toFixed(2)} (rider units), seatZr ${seatZr.toFixed(2)}`);
 console.log(`rider eye (flight frame, shifted, dragon units): ${eyeF.map((v) => v.toFixed(2)).join(",")}  -> metres ${eyeF.map((v) => (v * DRAGON_HEIGHT_M / DRAGON_NATIVE_H).toFixed(2)).join(",")}`);
 console.log(`closest leg vertex to a dragon vertex near the seat: ${minClear.toFixed(2)} dragon units`);
