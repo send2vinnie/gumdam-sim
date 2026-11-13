@@ -14,7 +14,7 @@ It runs in Chrome or Edge on **Windows** and Chrome on **Android**, and can be i
 Without a key the game uses its built-in **offline city** (see below), so you can play right away.
 
 ## City source: Local (offline) or Google
-Choose it in **Settings → City source** (applies after *Save & reload*). The default is Google when a key is set, otherwise Local.
+Choose it in **Settings → City source** (applies after *Save & reload*). The default is **Local**, even when a Google key is saved; Google is used only if you pick it here.
 
 * **Local (offline): PLATEAU Tokyo + OSM Nangang.** Stored with the game, no key or account needed, and cached on the device
   as you visit areas, so they also work offline afterwards.

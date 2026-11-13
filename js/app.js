@@ -118,7 +118,9 @@
 
   // City source: "google" (Photorealistic 3D Tiles, online, needs a key) or "local" (bundled PLATEAU Tokyo + OSM Nangang)
   const CITY_SOURCES = { local: "Local (offline): PLATEAU Tokyo + OSM Nangang", google: "Google Photorealistic (online, needs API key)" };
-  settings.citySource = CITY_SOURCES[store.get("citySource", null)] ? store.get("citySource", null) : (settings.key ? "google" : "local");
+  // Local maps are the default for everyone. Google is used only after the user picks it in Settings
+  // ("citySourceChosen" marks a real choice; values saved automatically by older versions are ignored).
+  settings.citySource = store.get("citySourceChosen", false) && CITY_SOURCES[store.get("citySource", null)] ? store.get("citySource", null) : "local";
   const tilesets = [];          // every 3D Tiles city layer currently shown
   let worldMode = "demo";       // "google" | "local" | "demo"
   let demoMode = false;
@@ -769,7 +771,8 @@
   $("modelDetail").onchange = () => setModelDetail($("modelDetail").value);
   updateDetailInfo();
   $("saveSettings").onclick = () => {
-    store.set("citySource", $("citySource").value); store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
+    if ($("citySource").value !== settings.citySource) { store.set("citySource", $("citySource").value); store.set("citySourceChosen", true); }
+    store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
     store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked);
     setTimeout(() => location.reload(), 50);
   };
