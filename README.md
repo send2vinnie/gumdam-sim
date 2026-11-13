@@ -73,6 +73,13 @@ when landed) and swings its tail. The chase, far and side cameras and the cockpi
 cameras never go into buildings: a ray from the character toward the camera pulls the camera in front of any wall in the way
 (checked about 10-14 times a second), and it eases back out when the view is clear.
 
+## Graphics quality: Low
+**Low** (the default on phones) draws only what is near: everything beyond **2 km** is not rendered (the city fades into a hazy
+sky instead of a hard edge), small props (start-screen pilots, the dragon scene) disappear beyond 450 m, the screen renders at
+75 % resolution, city tiles are not requested while the camera moves fast, and projectiles/particle effects are capped lower.
+Measured in Shinjuku from 250 m up: draw calls 448 -> 99, city tiles drawn 53 -> 24, city geometry in memory 67 -> 27 MB,
+textures 379 -> 204 MB. Medium and High are unchanged.
+
 ## Flight difficulty
 Choose **Easy / Medium / Hard** on the start screen or in Settings (remembered, applied at once, shown on the HUD). It works the
 same with keyboard, gamepad and touch, for both characters.

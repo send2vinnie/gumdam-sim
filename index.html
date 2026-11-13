@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=20">
+<link rel="stylesheet" href="css/style.css?v=21">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=20"></script>
+<script src="config.js?v=21"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -131,7 +131,7 @@
     <p class="note">Stored only in this browser. Restrict the key in Google Cloud to your site's address and to the Map Tiles API.</p>
     <label class="field">Graphics quality
       <select id="qualitySelect">
-        <option value="low">Low (phones)</option>
+        <option value="low">Low (phones: draws only what is within 2 km)</option>
         <option value="medium">Medium</option>
         <option value="high">High (desktop GPU)</option>
       </select>
@@ -220,6 +220,6 @@
   </form>
 </dialog>
 
-<script src="js/app.js?v=20"></script>
+<script src="js/app.js?v=21"></script>
 </body>
 </html>

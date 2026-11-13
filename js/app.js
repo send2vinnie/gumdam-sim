@@ -135,6 +135,14 @@
   scene.screenSpaceCameraController.enableInputs = false;
   scene.skyAtmosphere.show = true;
   scene.fog.enabled = true;
+  // Low graphics: draw only what is near. The far plane cuts everything (city tiles, models, effects) beyond RENDER_DISTANCE,
+  // denser fog hides the edge, and the canvas renders at 75 % resolution.
+  const LOW_GFX = settings.quality === "low";
+  const RENDER_DISTANCE = LOW_GFX ? 2000 : null;
+  if (LOW_GFX) { camera.frustum.far = RENDER_DISTANCE; scene.fog.density = 1.1e-3; scene.fog.minimumBrightness = 0.35; viewer.resolutionScale = 0.75;
+    // the sky dome lies beyond the far plane, so paint a hazy sky instead; the cut-off then reads as distance haze
+    scene.skyAtmosphere.show = false; scene.skyBox && (scene.skyBox.show = false); scene.backgroundColor = C.Color.fromCssColorString("#a9c6e2"); }
+  const nearOnly = () => (LOW_GFX ? new C.DistanceDisplayCondition(0, 450) : undefined);   // small props: pilots, dragon scene
   scene.highDynamicRange = false;
   viewer.clock.shouldAnimate = true;
   viewer.clock.multiplier = 1;
@@ -264,7 +272,9 @@ void main() {
     for (const w of LOCAL_WARDS) {
       const ts = await C.Cesium3DTileset.fromUrl("cities/tokyo/" + w + "/tileset.json", {
         maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
-        cacheBytes: lowMem ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
+        cacheBytes: lowMem || LOW_GFX ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
+        maximumCacheOverflowBytes: LOW_GFX ? 64 * 1024 * 1024 : undefined,
+        cullRequestsWhileMoving: true, cullRequestsWhileMovingMultiplier: LOW_GFX ? 30 : 60,   // skip tile requests while the camera moves fast
         dynamicScreenSpaceError: true,
         imageBasedLighting: skyLight(),
         shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
@@ -284,7 +294,8 @@ void main() {
             height: f.properties.mh || 0, extrudedHeight: f.properties.h, vertexFormat: C.PerInstanceColorAppearance.VERTEX_FORMAT
           }),
           id: "osm-" + instances.length,
-          attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString("#b9b6ae")), show: new C.ShowGeometryInstanceAttribute(true) }
+          attributes: Object.assign({ color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString("#b9b6ae")), show: new C.ShowGeometryInstanceAttribute(true) },
+            LOW_GFX ? { distanceDisplayCondition: new C.DistanceDisplayConditionGeometryInstanceAttribute(0, RENDER_DISTANCE) } : {})
         }));
       } catch (e) { /* skip a malformed footprint */ }
     }
@@ -531,7 +542,7 @@ void main() {
       const p = at(f, r);
       const ph = groundHeightAt(p.lon, p.lat, lobby.models) ?? lobby.ground;
       const faceAz = Math.atan2(-(fwd.e * f + right.e * r), -(fwd.n * f + right.n * r)) / DEG + (i % 3 - 1) * 8;
-      const m = await loadModel("models/pilot_" + variants[i % variants.length] + ".glb", modelMatrixFor(p.lat, p.lon, Math.abs(ph - lobby.ground) < 1.5 ? ph : lobby.ground, faceAz));
+      const m = await loadModel("models/pilot_" + variants[i % variants.length] + ".glb", modelMatrixFor(p.lat, p.lon, Math.abs(ph - lobby.ground) < 1.5 ? ph : lobby.ground, faceAz), { distanceDisplayCondition: nearOnly() });
       lobby.models.push(m);
     }
     // the trainer trains the dragon to jump, on the plaza to the Gundam's left (clear of the rig and the crowd)
@@ -540,8 +551,8 @@ void main() {
       const gh = (p) => { const h = groundHeightAt(p.lon, p.lat, lobby.models); return h !== undefined && Math.abs(h - lobby.ground) < 1.5 ? h : lobby.ground; };
       const azTo = (a, b) => Math.atan2((b.lon - a.lon) * Math.cos(a.lat * DEG), b.lat - a.lat) / DEG;
       lobby.jump = { d: dp, t: tp, dh: gh(dp), th: gh(tp), dAz: azTo(dp, tp), tAz: azTo(tp, dp), time: 0 };
-      lobby.dragon = await loadModel("models/dragon_stand.glb", modelMatrixFor(dp.lat, dp.lon, lobby.jump.dh, lobby.jump.dAz), { scale: DRAGON_SCALE, maximumScale: undefined });
-      lobby.trainer = await loadModel("models/trainer_stand.glb", modelMatrixFor(tp.lat, tp.lon, lobby.jump.th, lobby.jump.tAz), { scale: TRAINER_SCALE, maximumScale: undefined });
+      lobby.dragon = await loadModel("models/dragon_stand.glb", modelMatrixFor(dp.lat, dp.lon, lobby.jump.dh, lobby.jump.dAz), { scale: DRAGON_SCALE, maximumScale: undefined, distanceDisplayCondition: nearOnly() });
+      lobby.trainer = await loadModel("models/trainer_stand.glb", modelMatrixFor(tp.lat, tp.lon, lobby.jump.th, lobby.jump.tAz), { scale: TRAINER_SCALE, maximumScale: undefined, distanceDisplayCondition: nearOnly() });
     } catch (e) { console.error(e); }
     refreshPickHighlight();
     lobby.active = true;
@@ -1013,7 +1024,7 @@ void main() {
   // ---- weapons: beam rifle (Gundam) and fireball (dragon); destructible buildings ----------------------
   // One ray per shot (from the crosshair) finds what it will hit; the projectile then just flies there, so firing stays cheap.
   const WEAPONS = { gundam: { speed: 600, range: 1600, cooldown: 0.35 }, dragon: { speed: 80, range: 800, cooldown: 0.9 } };
-  const MAX_SHOTS = 6, MAX_FX = 10, MAX_CLIPS = 12;
+  const MAX_SHOTS = LOW_GFX ? 3 : 6, MAX_FX = LOW_GFX ? 5 : 10, MAX_CLIPS = LOW_GFX ? 6 : 12, FX_SCALE = LOW_GFX ? 0.5 : 1;   // fewer projectiles/particles on Low
   const ARM_PIVOT = [-6.4, 38.6, -0.9], MUZZLE = [0.01, -36.79, 1.38];             // gundam_rx78_18m*.glb: armR node (model units)
   const BODY_T = [-0.23696897, 0, 0], BODY_S = 0.3889163389802798;                   // body node transform (rotation +90 deg about Y)
   const DRAGON_MOUTH = [12.23, 8.22, 0.22];                                         // dragon.glb flight frame (dragon units)
@@ -1043,7 +1054,7 @@ void main() {
       image: sprite(o.inner, o.outer), modelMatrix: C.Transforms.eastNorthUpToFixedFrame(pos), emitter: new C.SphereEmitter(o.radius || 2),
       startColor: C.Color.fromCssColorString(o.c0), endColor: C.Color.fromCssColorString(o.c1), startScale: o.s0 || 1, endScale: o.s1 || 3,
       minimumParticleLife: o.life * 0.6, maximumParticleLife: o.life, minimumSpeed: o.v0, maximumSpeed: o.v1, imageSize: new C.Cartesian2(o.px, o.px),
-      emissionRate: 0, bursts: [new C.ParticleBurst({ time: 0, minimum: o.n, maximum: o.n })], lifetime: 60, loop: false, sizeInMeters: true,   // one burst; removed by updateEffects
+      emissionRate: 0, bursts: [new C.ParticleBurst({ time: 0, minimum: Math.round(o.n * FX_SCALE), maximum: Math.round(o.n * FX_SCALE) })], lifetime: 60, loop: false, sizeInMeters: true,   // one burst; removed by updateEffects
       updateCallback: gravity ? (p, dt) => { C.Cartesian3.normalize(p.position, sc); C.Cartesian3.multiplyByScalar(sc, -gravity * dt, sc); C.Cartesian3.add(p.velocity, sc, p.velocity); } : undefined
     }), o.life + 0.3);
   }
