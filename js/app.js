@@ -116,31 +116,42 @@
   viewer.clock.currentTime = C.JulianDate.fromIso8601("2026-05-02T05:00:00Z");
   if (viewer.shadowMap) { viewer.shadowMap.maximumDistance = 600; viewer.shadowMap.softShadows = true; }
 
-  let tileset = null;
+  // City source: "google" (Photorealistic 3D Tiles, online, needs a key) or "local" (bundled PLATEAU Tokyo + OSM Nangang)
+  const CITY_SOURCES = { local: "Local (offline): PLATEAU Tokyo + OSM Nangang", google: "Google Photorealistic (online, needs API key)" };
+  settings.citySource = CITY_SOURCES[store.get("citySource", null)] ? store.get("citySource", null) : (settings.key ? "google" : "local");
+  const tilesets = [];          // every 3D Tiles city layer currently shown
+  let worldMode = "demo";       // "google" | "local" | "demo"
   let demoMode = false;
+  let localWorld = null;        // { ground, osm: { features } } once the local city is loaded
+  const allTilesLoaded = () => tilesets.every((t) => t.tilesLoaded);
 
   async function initWorld() {
-    if (settings.key) {
-      try {
-        C.GoogleMaps.defaultApiKey = settings.key;
-        tileset = await C.createGooglePhotorealistic3DTileset(undefined, {
-          maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
-          cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
-          showCreditsOnScreen: true,
-          dynamicScreenSpaceError: true,
-          preferLeaves: false
-        });
-        scene.primitives.add(tileset);
-        scene.globe.show = false;
-        return;
-      } catch (e) {
-        console.error(e);
-        showFatal("Google 3D Tiles failed to load: " + (e.message || e));
-        setStatus("Google 3D Tiles failed to load: " + (e.message || e) + ". Check the API key and that the Map Tiles API is enabled. Running in demo mode.", true);
+    if (settings.citySource === "google") {
+      if (settings.key) {
+        try {
+          C.GoogleMaps.defaultApiKey = settings.key;
+          const ts = await C.createGooglePhotorealistic3DTileset(undefined, {
+            maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
+            cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
+            showCreditsOnScreen: true,
+            dynamicScreenSpaceError: true,
+            preferLeaves: false
+          });
+          scene.primitives.add(ts); tilesets.push(ts);
+          scene.globe.show = false;
+          worldMode = "google";
+          return;
+        } catch (e) {
+          console.error(e);
+          showFatal("Google 3D Tiles failed to load: " + (e.message || e));
+          setStatus("Google 3D Tiles failed to load: " + (e.message || e) + ". Check the API key and that the Map Tiles API is enabled. Using the offline city instead.", true);
+        }
+      } else {
+        setStatus("Google city needs an API key (Settings). Using the offline city instead.", true);
       }
-    } else {
-      setStatus("No Google Maps API key yet: running in demo mode on a flat grid. Add your key in Settings to load the real 3D cities.", true);
     }
+    try { await initLocalWorld(); worldMode = "local"; return; }
+    catch (e) { console.error(e); showFatal("Offline city failed to load: " + (e.message || e)); }
     demoMode = true;
     scene.globe.show = true;
     scene.globe.baseColor = C.Color.fromCssColorString("#2b3442");
@@ -148,6 +159,104 @@
       cells: 8, color: C.Color.fromCssColorString("#7dffb0").withAlpha(0.35),
       glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.fromCssColorString("#1d2633"), tileWidth: 256, tileHeight: 256
     }));
+  }
+
+  // ---- local (offline) city -------------------------------------------------
+  // PLATEAU tiles use ellipsoidal heights. The ground under them is a terrain built from each building's base height
+  // (cities/tokyo/ground.json + .bin grids), so streets, roofs and landing all line up. Elsewhere the ground is the ellipsoid.
+  const LOCAL_WARDS = ["shinjuku", "shibuya", "minato", "chiyoda", "sumida", "koto"];
+  const LOCAL_CREDITS = {
+    plateau: "3D都市モデル Project PLATEAU（国土交通省）を加工して作成",
+    osm: "© OpenStreetMap contributors (ODbL)"
+  };
+  async function loadGround() {
+    const idx = await (await fetch("cities/tokyo/ground.json")).json();
+    const areas = await Promise.all(idx.areas.map(async (a) => {
+      const buf = await (await fetch("cities/tokyo/" + a.file)).arrayBuffer();
+      return Object.assign({}, a, { data: new Int16Array(buf) });
+    }));
+    const MARGIN = 0.2; // degrees (~20 km): beyond a grid's edge its border height is held this far, then the ellipsoid
+    function heightAt(lon, lat) {
+      let best = null, bestD = Infinity;
+      for (const a of areas) {
+        const dx = lon < a.west ? a.west - lon : lon > a.east ? lon - a.east : 0;
+        const dy = lat < a.south ? a.south - lat : lat > a.north ? lat - a.north : 0;
+        const d = Math.max(dx, dy); if (d < bestD) { bestD = d; best = a; }
+      }
+      if (!best || bestD > MARGIN) return 0;
+      const a = best, n = a.size;
+      const fx = Math.min(Math.max((lon - a.west) / (a.east - a.west), 0), 1) * (n - 1);
+      const fy = Math.min(Math.max((lat - a.south) / (a.north - a.south), 0), 1) * (n - 1);
+      const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.min(x0 + 1, n - 1), y1 = Math.min(y0 + 1, n - 1), tx = fx - x0, ty = fy - y0;
+      const v = (x, y) => a.data[y * n + x] / 10;
+      return (v(x0, y0) * (1 - tx) + v(x1, y0) * tx) * (1 - ty) + (v(x0, y1) * (1 - tx) + v(x1, y1) * tx) * ty;
+    }
+    return { heightAt, geoidOffset: idx.geoidOffset };
+  }
+  async function initLocalWorld() {
+    const ground = await loadGround();
+    const W = 33, H = 33;
+    const provider = new C.CustomHeightmapTerrainProvider({
+      width: W, height: H,
+      callback: (x, y, level) => {
+        const rect = provider.tilingScheme.tileXYToRectangle(x, y, level);
+        const out = new Float32Array(W * H);
+        for (let r = 0; r < H; r++) {
+          const lat = (rect.north - (rect.north - rect.south) * r / (H - 1)) / DEG;
+          for (let c = 0; c < W; c++) out[r * W + c] = ground.heightAt((rect.west + (rect.east - rect.west) * c / (W - 1)) / DEG, lat);
+        }
+        return out;
+      }
+    });
+    scene.terrainProvider = provider;
+    scene.globe.show = true;
+    scene.globe.depthTestAgainstTerrain = true;
+    scene.globe.baseColor = C.Color.fromCssColorString("#4a4f55");
+    viewer.imageryLayers.addImageryProvider(new C.GridImageryProvider({
+      cells: 4, color: C.Color.fromCssColorString("#ffffff").withAlpha(0.08),
+      glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.fromCssColorString("#4a4f55"), tileWidth: 256, tileHeight: 256
+    }));
+    for (const w of LOCAL_WARDS) {
+      const ts = await C.Cesium3DTileset.fromUrl("cities/tokyo/" + w + "/tileset.json", {
+        maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
+        cacheBytes: lowMem ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
+        dynamicScreenSpaceError: true,
+        shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
+      });
+      scene.primitives.add(ts); tilesets.push(ts);
+    }
+    const osm = await (await fetch("cities/taipei/nangang-buildings.geojson")).json();
+    const instances = [];
+    for (const f of osm.features) {
+      const ring = f.geometry.coordinates[0];
+      const holes = f.geometry.coordinates.slice(1).map((h) => new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray(h.flat())));
+      try {
+        instances.push(new C.GeometryInstance({
+          geometry: new C.PolygonGeometry({
+            polygonHierarchy: new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray(ring.flat()), holes),
+            height: f.properties.mh || 0, extrudedHeight: f.properties.h, vertexFormat: C.PerInstanceColorAppearance.VERTEX_FORMAT
+          }),
+          attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString("#b9b6ae")) }
+        }));
+      } catch (e) { /* skip a malformed footprint */ }
+    }
+    scene.primitives.add(new C.Primitive({ geometryInstances: instances, appearance: new C.PerInstanceColorAppearance({ translucent: false }), shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED }));
+    for (const txt of [LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
+    localWorld = { ground, osm };
+  }
+
+  // open, level ground near a point from the OSM footprints: the nearest grid point at least 25 m from every building
+  function openGroundFromOsm(lat0, lon0, radius) {
+    const mLat = R_EARTH * DEG, mLon = R_EARTH * DEG * Math.cos(lat0 * DEG);
+    const polys = localWorld.osm.features.map((f) => f.geometry.coordinates[0].map(([x, y]) => [(x - lon0) * mLon, (y - lat0) * mLat]));
+    const inside = (px, py, p) => { let c = false; for (let i = 0, j = p.length - 1; i < p.length; j = i++) { const [xi, yi] = p[i], [xj, yj] = p[j]; if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) c = !c; } return c; };
+    const segDist = (px, py, [ax, ay], [bx, by]) => { const dx = bx - ax, dy = by - ay, l = dx * dx + dy * dy; const t = l ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l)) : 0; return Math.hypot(px - ax - t * dx, py - ay - t * dy); };
+    const clearance = (px, py) => { let d = Infinity; for (const p of polys) { if (inside(px, py, p)) return 0; for (let i = 1; i < p.length; i++) d = Math.min(d, segDist(px, py, p[i - 1], p[i])); } return d; };
+    const cands = [];
+    for (let y = -radius; y <= radius; y += 10) for (let x = -radius; x <= radius; x += 10) if (x * x + y * y <= radius * radius) cands.push([x, y, Math.hypot(x, y)]);
+    cands.sort((a, b) => a[2] - b[2]);
+    for (const [x, y] of cands) if (clearance(x, y) >= 32) return { lat: lat0 + y / mLat, lon: lon0 + x / mLon, h: 0 };
+    return { lat: lat0, lon: lon0, h: 0 };
   }
 
   function setStatus(msg, warn) { const s = $("status"); s.textContent = msg || ""; s.classList.toggle("warn", !!warn); }
@@ -159,7 +268,15 @@
     if (!scene.sampleHeightSupported) return undefined;
     scratchCarto.longitude = lon * DEG; scratchCarto.latitude = lat * DEG; scratchCarto.height = 0;
     if (demoMode) return 0;
-    try { return scene.sampleHeight(scratchCarto, exclude, 1.5); } catch (e) { return undefined; }
+    let h;
+    try { h = scene.sampleHeight(scratchCarto, exclude, 1.5); } catch (e) { h = undefined; }
+    if (localWorld) {
+      // the street level is known from the data, so it is the floor: picking the globe can hit a coarse terrain
+      // tile's skirt far below the street before the detailed tile has loaded
+      const street = localWorld.ground.heightAt(lon, lat);
+      if (h === undefined || !isFinite(h) || h < street - 1) h = street;
+    }
+    return h;
   }
   function offsetLL(lat, lon, east, north) {
     return { lat: lat + (north / R_EARTH) / DEG, lon: lon + (east / (R_EARTH * Math.cos(lat * DEG))) / DEG };
@@ -190,7 +307,7 @@
 
   // ---- 3D detail (applied live from Settings) -------------------------------
   function applyCityDetail() {
-    if (tileset) tileset.maximumScreenSpaceError = CITY_SSE[settings.cityDetail];
+    for (const t of tilesets) t.maximumScreenSpaceError = CITY_SSE[settings.cityDetail];
   }
   function updateDetailInfo() {
     const txt = "Gundam: " + MODEL_NAMES[settings.modelDetail] + " · City: " + CITY_NAMES[settings.cityDetail];
@@ -241,10 +358,10 @@
 
   function waitForTiles(timeoutMs) {
     return new Promise((resolve) => {
-      if (!tileset) return resolve();
+      if (!tilesets.length) return resolve();
       const t0 = performance.now();
       const tick = () => {
-        if (tileset.tilesLoaded || performance.now() - t0 > timeoutMs) return resolve();
+        if (allTilesLoaded() || performance.now() - t0 > timeoutMs) return resolve();
         setTimeout(tick, 200);
       };
       setTimeout(tick, 400);
@@ -258,7 +375,8 @@
   async function findOpenGround(lat0, lon0, radius) {
     // Look for flat, open ground (a plaza or wide road) near the requested point by
     // sampling the 3D tiles. A spot is "open" when a 20 m ring around it is level with it.
-    if (demoMode || !tileset) return { lat: lat0, lon: lon0, h: 0 };
+    if (worldMode === "local") return openGroundFromOsm(lat0, lon0, radius);
+    if (demoMode || !tilesets.length) return { lat: lat0, lon: lon0, h: 0 };
     const pts = [], meta = [];
     const step = 25;
     for (let y = -radius; y <= radius; y += step) for (let x = -radius; x <= radius; x += step) {
@@ -333,7 +451,8 @@
     lobby.active = true;
     $("scaleCard").innerHTML =
       "<b>True scale on this screen</b><br>Gundam (head height): <b>18.0 m</b> · Pilots: <b>1.75 m</b> (≈ 1/10 of the Gundam)<br>" +
-      "Pull-up bar: <b>22.1 m</b> high · " + (demoMode ? "Demo grid (no city)" : "Real buildings: Google 3D Tiles");
+      "Pull-up bar: <b>22.1 m</b> high · " + (worldMode === "google" ? "Real buildings: Google 3D Tiles" : worldMode === "local"
+        ? "Offline city: PLATEAU Tokyo (MLIT) · OSM Nangang" : "Demo grid (no city)");
   }
 
   function lobbyCamera(dt) {
@@ -566,7 +685,7 @@
     $("hudVs").textContent = fly.vu.toFixed(1);
     $("hudMode").textContent = fly.grounded ? "LANDED" : input.boost ? "BOOST" : "HOVER";
     $("impact").classList.toggle("on", fly.impactT > 0);
-    $("loadingTiles").classList.toggle("on", !!tileset && !tileset.tilesLoaded && fly.ground === undefined);
+    $("loadingTiles").classList.toggle("on", tilesets.length > 0 && !allTilesLoaded() && fly.ground === undefined);
     drawCompass();
   }
 
@@ -638,7 +757,7 @@
   $("camBtn").onclick = cycleCamera;
   $("menuBtn").onclick = togglePause;
   const openSettings = () => {
-    $("keyInput").value = settings.key; $("qualitySelect").value = settings.quality;
+    $("citySource").value = settings.citySource; $("keyInput").value = settings.key; $("qualitySelect").value = settings.quality;
     $("invertY").checked = settings.invertY; $("showFps").checked = settings.showFps; $("settingsDlg").showModal();
   };
   $("settingsBtn").onclick = openSettings; $("pSettingsBtn").onclick = openSettings;
@@ -650,7 +769,7 @@
   $("modelDetail").onchange = () => setModelDetail($("modelDetail").value);
   updateDetailInfo();
   $("saveSettings").onclick = () => {
-    store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
+    store.set("citySource", $("citySource").value); store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
     store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked);
     setTimeout(() => location.reload(), 50);
   };
@@ -663,7 +782,7 @@
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get tileset() { return tileset; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, tilesets, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";

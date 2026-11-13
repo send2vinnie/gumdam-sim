@@ -1,0 +1,60 @@
+{
+ "geoidOffset": 36.71,
+ "note": "heights are ellipsoidal metres (TP + geoidOffset) * 10 as Int16 LE, row-major from the south-west corner",
+ "areas": [
+  {
+   "name": "shinjuku",
+   "west": 139.664243,
+   "south": 35.665244,
+   "east": 139.721757,
+   "north": 35.711956,
+   "size": 261,
+   "file": "ground/shinjuku.bin"
+  },
+  {
+   "name": "shibuya",
+   "west": 139.670754,
+   "south": 35.635644,
+   "east": 139.728246,
+   "north": 35.682356,
+   "size": 261,
+   "file": "ground/shibuya.bin"
+  },
+  {
+   "name": "tokyotower",
+   "west": 139.711256,
+   "south": 35.629444,
+   "east": 139.768744,
+   "north": 35.676156,
+   "size": 261,
+   "file": "ground/tokyotower.bin"
+  },
+  {
+   "name": "marunouchi",
+   "west": 139.735247,
+   "south": 35.656144,
+   "east": 139.792753,
+   "north": 35.702856,
+   "size": 261,
+   "file": "ground/marunouchi.bin"
+  },
+  {
+   "name": "skytree",
+   "west": 139.776238,
+   "south": 35.680644,
+   "east": 139.833762,
+   "north": 35.727356,
+   "size": 261,
+   "file": "ground/skytree.bin"
+  },
+  {
+   "name": "odaiba",
+   "west": 139.741268,
+   "south": 35.597644,
+   "east": 139.798732,
+   "north": 35.644356,
+   "size": 261,
+   "file": "ground/odaiba.bin"
+  }
+ ]
+}

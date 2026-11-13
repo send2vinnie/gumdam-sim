@@ -11,7 +11,22 @@ It runs in Chrome or Edge on **Windows** and Chrome on **Android**, and can be i
    (for example `http://localhost:8080/*` and `https://<you>.github.io/*`).
 4. Paste it into `config.js` (`googleMapsApiKey`) or into the in-game **Settings** dialog.
 
-Without a key the game runs in demo mode on a flat grid so you can try the controls.
+Without a key the game uses its built-in **offline city** (see below), so you can play right away.
+
+## City source: Local (offline) or Google
+Choose it in **Settings → City source** (applies after *Save & reload*). The default is Google when a key is set, otherwise Local.
+
+* **Local (offline): PLATEAU Tokyo + OSM Nangang.** Stored with the game, no key or account needed, and cached on the device
+  as you visit areas, so they also work offline afterwards.
+  * Tokyo: the Japanese government's open 3D city model [Project PLATEAU](https://www.mlit.go.jp/plateau/) (MLIT, 2025, LOD2
+    buildings with photo textures where PLATEAU has them). About 1.5 km around each starting point: Nishi-Shinjuku, Shibuya,
+    Tokyo Tower, Tokyo Station / Marunouchi, Skytree and Odaiba (`cities/tokyo/<ward>/tileset.json`, 653 MB in total).
+    Tiles were clipped to those areas, the building attribute tables were removed and texture atlases were reduced to
+    1024 px. The ground under the buildings is built from each building's surveyed base height (`cities/tokyo/ground/`).
+  * Nangang start screen: OpenStreetMap building footprints within 800 m, extruded from their `height` / `building:levels`
+    tags (`cities/taipei/nangang-buildings.geojson`).
+* **Google Photorealistic (online, needs API key).** Photo-real everywhere, streamed from Google. It cannot be stored
+  offline: Google's terms don't allow downloading or caching the tiles.
 
 ## 2. Run it
 * **Windows (local):** double-click `start-windows.bat`. It serves the folder at http://localhost:8080 and opens your browser.
@@ -65,3 +80,6 @@ plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 3D model: "ガンダム（THE ORIGIN版)/Gundam(THE ORIGIN ver)" by みそ太郎 (https://sketchfab.com/nama_140), CC-BY-4.0,
 https://sketchfab.com/3d-models/the-origingundamthe-origin-ver-b1fbcc97214a431bbc024f7bc929c41a. Modified (rescaled, posed, animated).
 City data © Google and its data providers. CesiumJS © Cesium GS (Apache-2.0).
+Offline Tokyo: 出典：国土交通省 PLATEAU（https://www.mlit.go.jp/plateau/）。3D都市モデル（Project PLATEAU）を加工して作成
+(clipped, attributes removed, textures reduced, ground heights derived), used under the PLATEAU site policy (compatible with CC BY 4.0).
+Offline Nangang: © OpenStreetMap contributors, Open Database License (ODbL), https://www.openstreetmap.org/copyright.

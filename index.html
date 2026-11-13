@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=6">
+<link rel="stylesheet" href="css/style.css?v=7">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=6"></script>
+<script src="config.js?v=7"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -98,6 +98,13 @@
 <dialog id="settingsDlg">
   <form method="dialog">
     <h2>Settings</h2>
+    <label class="field">City source
+      <select id="citySource">
+        <option value="local">Local (offline): PLATEAU Tokyo + OSM Nangang</option>
+        <option value="google">Google Photorealistic (online, needs API key)</option>
+      </select>
+    </label>
+    <p class="note">Local works without a key and is stored with the game: 6 Tokyo areas (about 1.5 km around each starting point) and the Nangang start screen. Google covers everywhere in photo-real detail but needs the key below. Changing this reloads the game when you press Save.</p>
     <label class="field">Google Maps Platform API key (Map Tiles API enabled)
       <input id="keyInput" type="password" autocomplete="off" placeholder="AIza…">
     </label>
@@ -171,13 +178,15 @@
   <form method="dialog">
     <h2>Credits</h2>
     <p>3D model: "ガンダム（THE ORIGIN版)/Gundam(THE ORIGIN ver)" by みそ太郎 (<a href="https://sketchfab.com/nama_140" target="_blank" rel="noopener">sketchfab.com/nama_140</a>), licensed under <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC-BY-4.0</a>. <a href="https://sketchfab.com/3d-models/the-origingundamthe-origin-ver-b1fbcc97214a431bbc024f7bc929c41a" target="_blank" rel="noopener">Source</a>. Modified: rescaled to 18.0 m, rifle and shield placed in hand, pull-up animation added.</p>
-    <p>City: Google Photorealistic 3D Tiles (Map Tiles API). Map data attributions are shown at the bottom of the screen.</p>
+    <p>City (Google mode): Google Photorealistic 3D Tiles (Map Tiles API). Map data attributions are shown at the bottom of the screen.</p>
+    <p>City (Local mode), Tokyo: 3D都市モデル Project PLATEAU (国土交通省 / MLIT), 2025 building models (LOD2) for Shinjuku, Shibuya, Minato, Chiyoda, Sumida and Koto wards. 出典：国土交通省 PLATEAU（<a href="https://www.mlit.go.jp/plateau/" target="_blank" rel="noopener">https://www.mlit.go.jp/plateau/</a>）。本データは国土交通省 PLATEAU の3D都市モデルを加工して作成したものです (clipped to the play areas, attributes removed, textures reduced to 1024 px; ground heights derived from the building data). Used under the <a href="https://www.mlit.go.jp/plateau/site-policy/" target="_blank" rel="noopener">PLATEAU site policy</a> (compatible with CC BY 4.0).</p>
+    <p>City (Local mode), Taipei Nangang start screen: building footprints and heights © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>, available under the Open Database License (ODbL).</p>
     <p>Rendering: CesiumJS (Apache-2.0).</p>
     <p>Pilot figures: original low-poly models made for this simulator.</p>
     <div class="row"><button value="close" class="primary">OK</button></div>
   </form>
 </dialog>
 
-<script src="js/app.js?v=6"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>
