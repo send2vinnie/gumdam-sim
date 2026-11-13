@@ -126,3 +126,7 @@ dialog a { color: var(--accent); }
   .stick { width: 124px; height: 124px; }
   .touch-btn { right: calc(160px + env(safe-area-inset-right)); width: 70px; height: 70px; }
 }
+.pick-label { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 21; pointer-events: none;
+  background: rgba(10, 18, 36, .72); color: var(--text); border: 1px solid rgba(242, 196, 40, .6); border-radius: 999px; padding: 6px 14px; font-size: 13px; white-space: nowrap; }
+.pick-label[hidden] { display: none; }
+@media (max-width: 700px) { .pick-label { top: auto; bottom: calc(150px + env(safe-area-inset-bottom)); font-size: 12px; } }

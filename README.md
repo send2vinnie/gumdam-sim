@@ -60,7 +60,8 @@ sets the defaults the first time the game runs, and still needs *Save & reload*.
 Pick one on the start screen (**Character**), remembered between visits.
 * **Gundam RX-78-02**, true scale (18.0 m head height).
 * **Dragon with rider**: the dragon is shown at a **rideable 4 m** rather than its official 1.7 m. A 1.75 m rider sits astride
-  its lower neck, leaning forward with both hands on its horns; the rider is skinned to the dragon's joints, so the hands stay on
+  its lower neck with legs wide open around it (checked to never pass through the neck, even during head turns), leaning
+  forward with both hands on its horns; the rider is skinned to the dragon's joints, so the hands stay on
   the horns when the head turns. To use another dragon size, change `DRAGON_HEIGHT_M` in `js/app.js` and rebuild the model with
   `node tools/build_dragon_rider.js <dragon folder> <trainer folder> models/dragon.glb <height>` so the rider stays 1.75 m.
 
@@ -80,7 +81,11 @@ cameras never go into buildings: a ray from the character toward the camera pull
 
 ## Start screen
 The start screen is set at Taipei's Nangang Exhibition Center: the Gundam does pull-ups on a steel bar while a crowd of pilots
-watches. The app searches the 3D tiles within 250 m of the configured point for open, level ground so the rig sits on the
+watches. Beside it, the trainer (1.75 m) trains the dragon (4 m) to jump: the dragon crouches, leaps about 2.6 m with a burst of
+wing beats and lands with a small squash, while the trainer points up for each jump and watches.
+**Choose your character by clicking or tapping it** (the Gundam, or the dragon / trainer): the choice gets a yellow outline,
+a "Selected: ..." label, syncs with the Character menu and is remembered; the camera drifts toward the selected character.
+Dragging still turns the camera. The app searches the 3D tiles within 250 m of the configured point for open, level ground so the rig sits on the
 plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 
 ## Files
@@ -88,6 +93,7 @@ plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 * `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The fists stay closed around a round bar in one overhand grip the whole time (the finger curl is baked into the mesh, so no extra joints are needed on phones), and the arms are solved every frame so the forearms stay near vertical under the bar while the elbows travel down and out.
 * `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses
+* `models/dragon_stand.glb`, `models/trainer_stand.glb` start-screen dragon (wing joints) and trainer (right-arm joint), built by `tools/build_lobby_actors.js`
 * `models/dragon.glb` dragon in flight attitude with a 5-joint rig (body, head, wings, tail) and its rider (built by `tools/build_dragon_rider.js`)
 * `js/app.js` simulator, `config.js` key and locations, `sw.js` + `manifest.webmanifest` app install
 

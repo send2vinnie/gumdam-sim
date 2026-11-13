@@ -45,7 +45,7 @@
   const DRAGON_NATIVE_H = 18.16;   // standing height (horn tips) in dragon.glb units
   const DRAGON_SCALE = DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
   const RIDER_HEIGHT_M = 1.75;
-  const RIDER_EYE = [7.25, 12.97];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
+  const RIDER_EYE = [6.24, 13.92];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
   const D_PITCH = 55 * DEG;                // body pitch baked into dragon.glb (native joints are in the upright frame)
   const DRAGON_JOINTS = {
     head: { p: [0, -3.0, 12.8], rest: -45 * DEG }, tail: { p: [0, 2.6, 4.5], rest: -52 * DEG },
@@ -429,6 +429,7 @@ void main() {
         if (gen !== modelGen || !ok || lobby.models[0] !== oldPull) { scene.primitives.remove(m); return; }
         scene.primitives.remove(oldPull);
         lobby.models[0] = m;
+        refreshPickHighlight();
       })());
     }
     try { await Promise.all(jobs); }
@@ -529,6 +530,16 @@ void main() {
       const m = await loadModel("models/pilot_" + variants[i % variants.length] + ".glb", modelMatrixFor(p.lat, p.lon, Math.abs(ph - lobby.ground) < 1.5 ? ph : lobby.ground, faceAz));
       lobby.models.push(m);
     }
+    // the trainer trains the dragon to jump, on the plaza to the Gundam's left (clear of the rig and the crowd)
+    try {
+      const dp = at(3, -19), tp = at(9.5, -15.5);
+      const gh = (p) => { const h = groundHeightAt(p.lon, p.lat, lobby.models); return h !== undefined && Math.abs(h - lobby.ground) < 1.5 ? h : lobby.ground; };
+      const azTo = (a, b) => Math.atan2((b.lon - a.lon) * Math.cos(a.lat * DEG), b.lat - a.lat) / DEG;
+      lobby.jump = { d: dp, t: tp, dh: gh(dp), th: gh(tp), dAz: azTo(dp, tp), tAz: azTo(tp, dp), time: 0 };
+      lobby.dragon = await loadModel("models/dragon_stand.glb", modelMatrixFor(dp.lat, dp.lon, lobby.jump.dh, lobby.jump.dAz), { scale: DRAGON_SCALE, maximumScale: undefined });
+      lobby.trainer = await loadModel("models/trainer_stand.glb", modelMatrixFor(tp.lat, tp.lon, lobby.jump.th, lobby.jump.tAz), { scale: TRAINER_SCALE, maximumScale: undefined });
+    } catch (e) { console.error(e); }
+    refreshPickHighlight();
     lobby.active = true;
     $("scaleCard").innerHTML =
       "<b>True scale on this screen</b><br>Gundam (head height): <b>18.0 m</b> · Pilots: <b>1.75 m</b> (≈ 1/10 of the Gundam)<br>" +
@@ -567,10 +578,73 @@ void main() {
 
   function lobbyCamera(dt) {
     lobby.orbit += dt * 4 * DEG;
-    const target = C.Cartesian3.fromDegrees(lobby.lon, lobby.lat, lobby.ground + 12);
-    const heading = lobby.heading * DEG + Math.PI + Math.sin(lobby.orbit) * 0.9 + look.yaw, pitch = -8 * DEG + look.pitch;
-    const range = collideRange("lobby", target, heading, pitch, 58 * look.zoom, lobby.models, 2.0, 14, dt);
+    // frame the Gundam and the dragon scene; drift toward whichever character is selected
+    const want = settings.character === "dragon" ? 1 : 0;
+    lobby.focus = (lobby.focus === undefined ? want : lobby.focus) + (want - (lobby.focus === undefined ? want : lobby.focus)) * (1 - Math.exp(-dt * 1.5));
+    const H = lobby.heading * DEG, side = -9 - 3 * lobby.focus, height = 12 - 4 * lobby.focus;
+    const tgt = offsetLL(lobby.lat, lobby.lon, Math.cos(H) * side, -Math.sin(H) * side);
+    const target = C.Cartesian3.fromDegrees(tgt.lon, tgt.lat, lobby.ground + height);
+    const heading = H + Math.PI + Math.sin(lobby.orbit) * 0.9 + look.yaw, pitch = -8 * DEG + look.pitch;
+    const range = collideRange("lobby", target, heading, pitch, (66 - 12 * lobby.focus) * look.zoom, lobbyPickables().concat(lobby.models), 2.0, 12, dt);
     camera.lookAtTransform(C.Transforms.eastNorthUpToFixedFrame(target), new C.HeadingPitchRange(heading, pitch, range));
+    updateLobbyActors(dt);
+  }
+
+  // ---- start-screen actors: the dragon's jump loop and the trainer's gestures ----
+  const TRAINER_SCALE = 1.75 / 17.62;
+  const JUMP = { period: 3.6, crouch: 0.45, air: 0.95, land: 0.3, height: 2.6 };
+  function setNode(model, name, p, axis, ang) {
+    if (!model || !model.ready) return; model.__n = model.__n || {};
+    if (model.__n[name] === undefined) { try { model.__n[name] = model.getNode(name) || null; } catch (e) { model.__n[name] = null; } }
+    const n = model.__n[name]; if (!n) return;
+    n.matrix = C.Matrix4.fromRotationTranslation(C.Matrix3.fromQuaternion(C.Quaternion.fromAxisAngle(axis, ang)), new C.Cartesian3(p[0], p[1], p[2]));
+  }
+  const AX_X = C.Cartesian3.UNIT_X, AX_Z = C.Cartesian3.UNIT_Z;
+  function updateLobbyActors(dt) {
+    const J = lobby.jump; if (!J || !lobby.dragon) return;
+    J.time = (J.time + dt) % JUMP.period; const t = J.time;
+    const ease = (x) => x * x * (3 - 2 * x);
+    let lift = 0, sy = 1, sxz = 1, wing = 0, armUp = 0;
+    const c0 = JUMP.crouch, a0 = c0 + JUMP.air, l0 = a0 + JUMP.land;
+    if (t < c0) { const u = ease(t / c0); sy = 1 - 0.13 * u; sxz = 1 + 0.06 * u; wing = 25 * DEG * u; armUp = u; }       // crouch, wings up
+    else if (t < a0) { const u = (t - c0) / JUMP.air; lift = JUMP.height * 4 * u * (1 - u); sy = 1 + 0.07 * Math.max(0, 1 - u * 3); sxz = 1 - 0.03 * Math.max(0, 1 - u * 3);
+      wing = 40 * DEG * Math.cos(u * Math.PI * 3); armUp = 1; }                                                        // leap with wing beats
+    else if (t < l0) { const u = (t - a0) / JUMP.land; const sq = Math.sin(u * Math.PI); sy = 1 - 0.12 * sq; sxz = 1 + 0.06 * sq; wing = -10 * DEG * sq; armUp = 1 - ease(u); } // land: squash
+    else { wing = 4 * DEG * Math.sin(t * 2.2); }                                                                        // pause, gentle wing idle
+    const m = modelMatrixFor(J.d.lat, J.d.lon, J.dh + lift, J.dAz);
+    lobby.dragon.modelMatrix = C.Matrix4.multiply(m, C.Matrix4.fromScale(new C.Cartesian3(sxz, sxz, sy)), m);
+    setNode(lobby.dragon, "wingL", [-1.5, 11.0, -2.6], AX_X, wing);
+    setNode(lobby.dragon, "wingR", [-1.5, 11.0, 2.6], AX_X, -wing);
+    if (lobby.trainer) {
+      // the trainer points up for each jump, bobs a little and follows the dragon with a slight turn
+      const bob = 0.03 * Math.sin(t * Math.PI * 2 / JUMP.period * 2);
+      lobby.trainer.modelMatrix = modelMatrixFor(J.t.lat, J.t.lon, J.th + Math.max(0, bob), J.tAz + 6 * Math.sin(t * 1.3), -4 * DEG * (lift / JUMP.height));
+      setNode(lobby.trainer, "armR", [0, 13.1, 2.15], AX_Z, armUp * 135 * DEG);
+    }
+  }
+
+  // ---- pick the character on the start screen by clicking / tapping it ----
+  const lobbyPickables = () => [lobby.dragon, lobby.trainer].filter(Boolean);
+  function pickedCharacter(x, y) {
+    let picked; try { picked = scene.pick(new C.Cartesian2(x, y)); } catch (e) { picked = undefined; }
+    const prim = picked && picked.primitive;
+    if (!prim) return null;
+    if (prim === lobby.dragon || prim === lobby.trainer) return "dragon";
+    if (prim === lobby.models[0]) return "gundam";
+    return null;
+  }
+  function refreshPickHighlight() {
+    const sel = settings.character;
+    const set = (m, on) => { if (!m) return; m.silhouetteColor = C.Color.YELLOW; m.silhouetteSize = on ? 2.0 : 0.0; };
+    set(lobby.models[0], sel === "gundam"); set(lobby.dragon, sel === "dragon"); set(lobby.trainer, sel === "dragon");
+    const lab = $("pickLabel"); if (lab) { lab.textContent = "Selected: " + (sel === "dragon" ? "Dragon (with rider)" : "Gundam RX-78-02") + " · tap a character to choose"; lab.hidden = !lobby.models.length; }
+  }
+  function selectCharacter(ch) {
+    if (!CHARACTERS[ch]) return;
+    settings.character = ch; store.set("character", ch);
+    const s = $("characterSelect"); if (s) s.value = ch;
+    if (typeof charNote === "function") charNote();
+    refreshPickHighlight();
   }
 
   // ---- input ------------------------------------------------------------------
@@ -624,6 +698,14 @@ void main() {
   canvas.addEventListener("pointerdown", (e) => { tap = e.isPrimary ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp, moved: 0 } : null; });
   canvas.addEventListener("pointermove", (e) => { if (tap && e.pointerId === tap.id) tap.moved = Math.max(tap.moved, Math.hypot(e.clientX - tap.x, e.clientY - tap.y)); });
   canvas.addEventListener("pointercancel", () => { tap = null; });
+  // desktop: pointer cursor over a pickable character (checked at most ~8 times a second)
+  let hoverT = 0;
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || state.mode !== "lobby" || tap) return;
+    if (e.timeStamp - hoverT < 120) return; hoverT = e.timeStamp;
+    const r = canvas.getBoundingClientRect();
+    canvas.style.cursor = pickedCharacter((e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height)) ? "pointer" : "";
+  });
   canvas.addEventListener("pointerup", (e) => {
     const t = tap; tap = null;
     if (!t || t.id !== e.pointerId || state.mode !== "lobby" || $("lobby").hidden) return;
@@ -631,6 +713,10 @@ void main() {
     // Event timestamps are used so a busy phone (frames still rendering) doesn't turn a quick tap into a "long press".
     const moved = Math.max(t.moved, Math.hypot(e.clientX - t.x, e.clientY - t.y));
     if (moved > (e.pointerType === "touch" ? 12 : 8) || e.timeStamp - t.t > 500) return;
+    // tapping a character selects it; tapping anywhere else hides / shows the panel
+    const r = canvas.getBoundingClientRect();
+    const ch = pickedCharacter((e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height));
+    if (ch) { selectCharacter(ch); return; }
     const off = !$("lobby").classList.contains("panel-off");
     if (!off) setLobbyCollapsed(true);
     setLobbyPanelOff(off);
@@ -891,7 +977,7 @@ void main() {
     ? "The dragon is shown at a rideable " + DRAGON_HEIGHT_M + " m (its official height is 1.7 m), with a 1.75 m rider on its back."
     : "True scale: the mobile suit stands 18.0 m."; };
   $("characterSelect").value = settings.character; charNote();
-  $("characterSelect").onchange = () => { const v = $("characterSelect").value; if (!CHARACTERS[v]) return; settings.character = v; store.set("character", v); charNote(); };
+  $("characterSelect").onchange = () => selectCharacter($("characterSelect").value);
   $("resumeBtn").onclick = togglePause;
   $("teleportBtn").onclick = () => { placeAt(spawns[+$("teleportSelect").value]); $("hudLoc").textContent = fly.spawn.name; togglePause(); };
   $("toLobbyBtn").onclick = async () => {
