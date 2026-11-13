@@ -85,6 +85,14 @@ Measured in Shinjuku from 250 m up: draw calls 448 -> 99, city tiles drawn 53 ->
 textures 379 -> 204 MB (measured with the earlier 2 km limit). Low is also capped at **30 FPS** (steadier frames, less heat
 and battery); a paused game draws at 10 FPS.
 
+Low also uses **half-size city textures**: each Tokyo tile is rewritten in the browser as it arrives (its WebP images scaled
+to half width and height, a quarter of the GPU memory), so the stored data stays the same for Medium and High. The tile
+memory budget is halved to match (64 MB + 32 MB per area). The start screen shows 5 pilots instead of 12, and the globe
+skips its atmosphere tint and uses a coarser ground mesh. Anti-aliasing, HDR and shadows were already off on Low; the sky
+fill light stays on, because without it walls facing away from the sun turn black.
+Measured with step 2 (software renderer, automatic resolution on): start screen 74 -> 69 ms/frame and draw calls
+269 -> 154; Shinjuku at 250 m 140 -> 130 ms/frame, city textures 206 -> 60 MB.
+
 On every quality setting:
 * **Tokyo areas stream by distance.** Each of the 6 Tokyo areas is opened when the camera comes within the draw distance
   + 1 km of it (Low 4 km, others 7 km) and dropped, freeing its memory, 1.5 km beyond that. The Taipei start screen loads no

@@ -142,8 +142,66 @@
   const RENDER_DISTANCE = LOW_GFX ? 3000 : null;
   if (LOW_GFX) { camera.frustum.far = RENDER_DISTANCE; scene.fog.density = 7.5e-4; scene.fog.minimumBrightness = 0.35; viewer.resolutionScale = 0.75;
     // the sky dome lies beyond the far plane, so paint a hazy sky instead; the cut-off then reads as distance haze
-    scene.skyAtmosphere.show = false; scene.skyBox && (scene.skyBox.show = false); scene.backgroundColor = C.Color.fromCssColorString("#a9c6e2"); }
+    scene.skyAtmosphere.show = false; scene.skyBox && (scene.skyBox.show = false); scene.backgroundColor = C.Color.fromCssColorString("#a9c6e2");
+    // cheaper ground: no atmosphere tint on the globe, coarser ground mesh (the street grid is flat at this scale)
+    scene.globe.showGroundAtmosphere = false; scene.globe.maximumScreenSpaceError = 4; }
   const nearOnly = () => (LOW_GFX ? new C.DistanceDisplayCondition(0, 450) : undefined);   // small props: pilots, dragon scene
+
+  // Low: half-size city textures. Each Tokyo tile (b3dm) is rewritten as it arrives, before Cesium reads it: its embedded
+  // images are scaled to half width and height (a quarter of the GPU memory) and stored back in their format (WebP). Any problem keeps
+  // the original tile. Tiles are patched in the browser so the stored city data stays the same for Medium and High.
+  if (LOW_GFX && typeof createImageBitmap === "function" && typeof OffscreenCanvas === "function") {
+    const origFetch = C.Resource.prototype.fetchArrayBuffer;
+    C.Resource.prototype.fetchArrayBuffer = function () {
+      const p = origFetch.apply(this, arguments);
+      if (!p || !/\/cities\/tokyo\/.*\.b3dm/.test(this.url)) return p;   // undefined = throttled; Cesium retries later
+      return p.then((buf) => halveB3dmTextures(buf).catch((e) => { console.warn("texture downscale skipped", e); return buf; }));
+    };
+  }
+  async function halveB3dmTextures(buf) {
+    const dv = new DataView(buf), u8 = new Uint8Array(buf);
+    if (dv.getUint32(0, true) !== 0x6d643362) return buf;   // "b3dm"
+    const head = 28 + dv.getUint32(12, true) + dv.getUint32(16, true) + dv.getUint32(20, true) + dv.getUint32(24, true);
+    const g = head; if (dv.getUint32(g, true) !== 0x46546c67) return buf;   // "glTF"
+    const jsonLen = dv.getUint32(g + 12, true);
+    const json = JSON.parse(new TextDecoder().decode(u8.subarray(g + 20, g + 20 + jsonLen)));
+    const binStart = g + 20 + jsonLen + 8, views = json.bufferViews || [];
+    const imgViews = new Map();
+    for (const im of json.images || []) if (im.bufferView !== undefined && /jpeg|png|webp/.test(im.mimeType || "")) imgViews.set(im.bufferView, im);
+    if (!imgViews.size) return buf;
+    const webpLost = new Set();
+    const parts = await Promise.all(views.map(async (bv, i) => {
+      const src = u8.subarray(binStart + (bv.byteOffset || 0), binStart + (bv.byteOffset || 0) + bv.byteLength);
+      const im = imgViews.get(i); if (!im) return src;
+      const bmp = await createImageBitmap(new Blob([src], { type: im.mimeType }));
+      if (bmp.width < 128 || bmp.height < 128) { bmp.close(); return src; }
+      const cv = new OffscreenCanvas(bmp.width >> 1, bmp.height >> 1);
+      cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height); bmp.close();
+      // keep WebP (PLATEAU tiles use EXT_texture_webp); browsers that cannot encode it return PNG, which then becomes the plain source
+      const blob = await cv.convertToBlob({ type: im.mimeType === "image/png" ? "image/png" : im.mimeType, quality: 0.85 });
+      if (blob.type !== im.mimeType) { im.mimeType = blob.type; webpLost.add(im); }
+      return new Uint8Array(await blob.arrayBuffer());
+    }));
+    if (webpLost.size) {   // an image is no longer WebP: point its textures at it directly instead of through the WebP extension
+      const idx = new Set([...webpLost].map((im) => json.images.indexOf(im)));
+      for (const t of json.textures || []) { const w = t.extensions && t.extensions.EXT_texture_webp; if (w && idx.has(w.source)) { t.source = w.source; delete t.extensions.EXT_texture_webp; } }
+    }
+    let off = 0;   // repack the binary chunk (4-byte aligned); accessors stay valid, their offsets are view-relative
+    views.forEach((bv, i) => { off = (off + 3) & ~3; bv.byteOffset = off; bv.byteLength = parts[i].length; off += parts[i].length; });
+    const binLen = (off + 3) & ~3; json.buffers[0].byteLength = off;
+    let jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+    const jsonPad = (4 - (jsonBytes.length % 4)) % 4;
+    const glbLen = 12 + 8 + jsonBytes.length + jsonPad + 8 + binLen;
+    const out = new Uint8Array(head + glbLen), o = new DataView(out.buffer);
+    out.set(u8.subarray(0, head)); o.setUint32(8, out.length, true);
+    o.setUint32(g, 0x46546c67, true); o.setUint32(g + 4, 2, true); o.setUint32(g + 8, glbLen, true);
+    o.setUint32(g + 12, jsonBytes.length + jsonPad, true); o.setUint32(g + 16, 0x4e4f534a, true);   // "JSON"
+    out.set(jsonBytes, g + 20); out.fill(0x20, g + 20 + jsonBytes.length, g + 20 + jsonBytes.length + jsonPad);
+    const b = g + 20 + jsonBytes.length + jsonPad;
+    o.setUint32(b, binLen, true); o.setUint32(b + 4, 0x004e4942, true);   // "BIN"
+    views.forEach((bv, i) => out.set(parts[i], b + 8 + bv.byteOffset));
+    return out.buffer;
+  }
   scene.highDynamicRange = false;
   viewer.clock.shouldAnimate = true;
   viewer.clock.multiplier = 1;
@@ -292,8 +350,8 @@ void main() {
   async function openWard(s) {
     const ts = await C.Cesium3DTileset.fromUrl("cities/tokyo/" + s.name + "/tileset.json", {
         maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
-        cacheBytes: lowMem || LOW_GFX ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
-        maximumCacheOverflowBytes: LOW_GFX ? 64 * 1024 * 1024 : undefined,
+        cacheBytes: LOW_GFX ? 64 * 1024 * 1024 : lowMem ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
+        maximumCacheOverflowBytes: LOW_GFX ? 32 * 1024 * 1024 : undefined,   // Low: half-size textures, so half the budget gives the same detail
         cullRequestsWhileMoving: true, cullRequestsWhileMovingMultiplier: LOW_GFX ? 30 : 60,   // skip tile requests while the camera moves fast
         dynamicScreenSpaceError: true,
         imageBasedLighting: skyLight(),
@@ -585,6 +643,7 @@ void main() {
     const crowd = [
       [14, -5], [15, 0.5], [14.5, 4.5], [17, -9], [18, 8.5], [19.5, -2.5], [20, 3], [22, -6], [23, 7], [16.5, 11.5], [21, -12], [24.5, 0]
     ];
+    if (LOW_GFX) crowd.length = 5;   // Low: the front row only (one of each pose)
     for (let i = 0; i < crowd.length; i++) {
       const [f, r] = crowd[i];
       const p = at(f, r);
