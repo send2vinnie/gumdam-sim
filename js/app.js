@@ -54,6 +54,19 @@
     invertY: store.get("invertY", false),
     showFps: store.get("showFps", false)
   };
+  // 3D detail: chosen live in Settings. Until the user picks, the defaults follow the graphics quality.
+  const CITY_SSE = { verylow: 64, low: 32, medium: 16, high: 8, ultra: 4 };
+  const CITY_NAMES = { verylow: "Very low", low: "Low", medium: "Medium", high: "High", ultra: "Ultra" };
+  const MODEL_NAMES = { low: "Low", medium: "Medium", high: "High" };
+  const lowMem = isTouch && navigator.deviceMemory !== undefined && navigator.deviceMemory <= 4;
+  const storedCity = store.get("cityDetail", null);
+  settings.cityDetail = CITY_SSE[storedCity] ? storedCity
+    : lowMem ? "verylow" : ({ low: "low", medium: "medium", high: "high" }[settings.quality] || (isTouch ? "low" : "medium"));
+  settings.modelDetail = MODEL_NAMES[store.get("modelDetail", null)] ? store.get("modelDetail", null) : (isTouch ? "medium" : "high");
+  function modelUrl(kind) {
+    const base = kind === "pullup" ? "models/gundam_rx78_pullup_18m" : "models/gundam_rx78_18m";
+    return base + ({ low: "_low", medium: "_med", high: "" }[settings.modelDetail] || "") + ".glb";
+  }
   const QUALITY = {
     low:    { sse: 32, browserRes: true,  fxaa: false, shadows: false, cacheBytes: 256 * 1024 * 1024 },
     medium: { sse: 16, browserRes: true,  fxaa: true,  shadows: false, cacheBytes: 512 * 1024 * 1024 },
@@ -110,9 +123,8 @@
     if (settings.key) {
       try {
         C.GoogleMaps.defaultApiKey = settings.key;
-        const lowMem = isTouch && navigator.deviceMemory !== undefined && navigator.deviceMemory <= 4;
         tileset = await C.createGooglePhotorealistic3DTileset(undefined, {
-          maximumScreenSpaceError: lowMem ? 40 : QUALITY.sse,
+          maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
           cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
           showCreditsOnScreen: true,
           dynamicScreenSpaceError: true,
@@ -168,6 +180,65 @@
     scene.primitives.add(model);
     return model;
   }
+  function whenReady(model) {
+    return new Promise((resolve) => {
+      if (model.ready) return resolve(true);
+      model.readyEvent.addEventListener(() => resolve(true));
+      model.errorEvent.addEventListener(() => resolve(false));
+    });
+  }
+
+  // ---- 3D detail (applied live from Settings) -------------------------------
+  function applyCityDetail() {
+    if (tileset) tileset.maximumScreenSpaceError = CITY_SSE[settings.cityDetail];
+  }
+  function updateDetailInfo() {
+    const txt = "Gundam: " + MODEL_NAMES[settings.modelDetail] + " · City: " + CITY_NAMES[settings.cityDetail];
+    for (const id of ["detailInfoPause", "detailInfoSettings"]) { const el = $(id); if (el) el.textContent = txt; }
+  }
+  let modelGen = 0;
+  async function swapModel(old, url, opts, onReady) {
+    // load the replacement next to the old one, then remove the old one once the new one can draw
+    const m = await loadModel(url, old.modelMatrix, opts);
+    m.show = old.show;
+    if (onReady) m.readyEvent.addEventListener(() => onReady(m));
+    return m;
+  }
+  async function setModelDetail(level) {
+    if (!MODEL_NAMES[level]) return;
+    settings.modelDetail = level;
+    store.set("modelDetail", level);
+    updateDetailInfo();
+    const gen = ++modelGen;
+    const jobs = [];
+    if (fly.model) {
+      jobs.push((async () => {
+        const old = fly.model;
+        const m = await swapModel(old, modelUrl("flight"));
+        fly.pendingModel = m;   // follows the flight path while it loads (see updateFlight)
+        const ok = await whenReady(m);
+        if (fly.pendingModel === m) fly.pendingModel = null;
+        if (gen !== modelGen || !ok) { scene.primitives.remove(m); return; }
+        m.modelMatrix = fly.model.modelMatrix; m.show = fly.model.show;
+        scene.primitives.remove(fly.model);
+        fly.model = m;
+      })());
+    }
+    const oldPull = lobby.models[0];
+    if (oldPull) {
+      jobs.push((async () => {
+        const m = await swapModel(oldPull, modelUrl("pullup"), { forwardAxis: C.Axis.Z },
+          (mm) => mm.activeAnimations.addAll({ loop: C.ModelAnimationLoop.REPEAT, multiplier: 1.0 }));
+        const ok = await whenReady(m);
+        if (gen !== modelGen || !ok || lobby.models[0] !== oldPull) { scene.primitives.remove(m); return; }
+        scene.primitives.remove(oldPull);
+        lobby.models[0] = m;
+      })());
+    }
+    try { await Promise.all(jobs); }
+    catch (e) { console.error(e); fly.pendingModel = null; showFatal("Could not load the " + MODEL_NAMES[level] + " Gundam model: " + (e.message || e)); }
+  }
+
   function waitForTiles(timeoutMs) {
     return new Promise((resolve) => {
       if (!tileset) return resolve();
@@ -220,7 +291,7 @@
     const H = lobby.heading;
 
     // Gundam on the pull-up bar (faces azimuth H)
-    const gm = await loadModel("models/gundam_rx78_pullup_18m.glb", modelMatrixFor(lobby.lat, lobby.lon, lobby.ground, H), { forwardAxis: C.Axis.Z }); // this file faces +Z
+    const gm = await loadModel(modelUrl("pullup"), modelMatrixFor(lobby.lat, lobby.lon, lobby.ground, H), { forwardAxis: C.Axis.Z }); // this file faces +Z
     gm.readyEvent.addEventListener(() => gm.activeAnimations.addAll({ loop: C.ModelAnimationLoop.REPEAT, multiplier: 1.0 }));
     lobby.models.push(gm);
 
@@ -369,7 +440,11 @@
 
   async function startFlight(spawn) {
     await fade(true);
-    if (!fly.model) fly.model = await loadModel("models/gundam_rx78_18m.glb", C.Matrix4.IDENTITY);
+    if (!fly.model) {
+      const lvl = settings.modelDetail;
+      fly.model = await loadModel(modelUrl("flight"), C.Matrix4.IDENTITY);
+      if (lvl !== settings.modelDetail) setModelDetail(settings.modelDetail); // detail changed while loading
+    }
     placeAt(spawn);
     state.mode = "fly";
     lobby.active = false;
@@ -402,7 +477,7 @@
     // proposed move
     const s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
     let ve = fly.vf * s + fly.vs * c, vn = fly.vf * c - fly.vs * s;
-    const excl = [fly.model].filter(Boolean);
+    const excl = [fly.model, fly.pendingModel].filter(Boolean);
 
     // ground under us (sampled every frame; cheap enough at 1.5 m footprint)
     const g = groundHeightAt(fly.lon, fly.lat, excl);
@@ -445,6 +520,7 @@
     fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k;
     if (fly.model) fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank, MS_CENTER);
     fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
+    if (fly.pendingModel && fly.model) { fly.pendingModel.modelMatrix = fly.model.modelMatrix; fly.pendingModel.show = fly.model.show; }
 
     if (fly.impactT > 0) fly.impactT -= dt;
     // HUD
@@ -534,6 +610,13 @@
     $("invertY").checked = settings.invertY; $("showFps").checked = settings.showFps; $("settingsDlg").showModal();
   };
   $("settingsBtn").onclick = openSettings; $("pSettingsBtn").onclick = openSettings;
+  $("cityDetail").value = settings.cityDetail; $("modelDetail").value = settings.modelDetail;
+  $("cityDetail").onchange = () => {
+    const v = $("cityDetail").value; if (!CITY_SSE[v]) return;
+    settings.cityDetail = v; store.set("cityDetail", v); applyCityDetail(); updateDetailInfo();
+  };
+  $("modelDetail").onchange = () => setModelDetail($("modelDetail").value);
+  updateDetailInfo();
   $("saveSettings").onclick = () => {
     store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
     store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked);

@@ -82,6 +82,7 @@
       <button id="pHelpBtn">Controls</button>
       <button id="toLobbyBtn">Start screen</button>
     </div>
+    <p class="note" id="detailInfoPause"></p>
   </div>
 </section>
 
@@ -100,6 +101,25 @@
         <option value="high">High (desktop GPU)</option>
       </select>
     </label>
+    <h3 class="sect">3D detail</h3>
+    <p class="note">These two apply immediately. Lower them if the game is slow or crashes on your phone.</p>
+    <label class="field">City detail
+      <select id="cityDetail">
+        <option value="verylow">Very low</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        <option value="ultra">Ultra</option>
+      </select>
+    </label>
+    <label class="field">Gundam model detail
+      <select id="modelDetail">
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+      </select>
+    </label>
+    <p class="note" id="detailInfoSettings"></p>
     <label class="check"><input id="invertY" type="checkbox"> Invert camera up/down</label>
     <label class="check"><input id="showFps" type="checkbox"> Show FPS</label>
     <div class="row"><button value="cancel">Close</button><button id="saveSettings" value="save" class="primary">Save &amp; reload</button></div>

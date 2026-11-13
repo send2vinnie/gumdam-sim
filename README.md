@@ -29,6 +29,18 @@ Without a key the game runs in demo mode on a flat grid so you can try the contr
 | Camera | V, mouse drag, wheel | Y, right stick up/down | ◎, drag empty screen |
 | Pause | Esc | Start | ☰ |
 
+## 4. Settings: 3D detail
+Open **Settings** from the start screen or the pause menu. The two detail options apply immediately, without reloading:
+* **City detail** (Very low, Low, Medium, High, Ultra) sets how sharp Google's 3D buildings are. Higher looks better but uses
+  more memory and data. The default is Low on phones and tablets, Very low on phones with 4 GB of memory or less, and Medium
+  on computers.
+* **Gundam model detail** (Low, Medium, High) swaps the mobile suit between three versions. High is the original model.
+  Medium and Low have fewer polygons and smaller textures, so they load and draw faster on phones. The default is Medium on
+  phones and tablets, and High on computers.
+
+The pause menu and Settings show the current levels, for example "Gundam: Medium · City: Low". **Graphics quality** still
+sets the defaults the first time the game runs, and still needs *Save & reload*.
+
 ## Scale (verified, not assumed)
 * The uploaded model's glTF units are **not** metres: its head top sits at 46.28 units. It was rescaled by 0.38892 so the head
   height is exactly **18.0 m**, the RX-78-02's official head height. Feet sit at the origin.
@@ -45,6 +57,7 @@ plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 ## Files
 * `models/gundam_rx78_18m.glb` flight model (static pose, rifle and shield in hand, faces +X)
 * `models/gundam_rx78_pullup_18m.glb` skinned model with the 4 s `PullUp` loop (faces +Z)
+* `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses
 * `js/app.js` simulator, `config.js` key and locations, `sw.js` + `manifest.webmanifest` app install
 

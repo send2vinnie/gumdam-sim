@@ -25,6 +25,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 h1 { margin: 6px 0 8px; font-size: 26px; line-height: 1.15; }
 h2 { margin: 0 0 12px; font-size: 20px; }
 h3 { margin: 0 0 6px; font-size: 14px; color: var(--accent); }
+h3.sect { margin-top: 16px; }
 .sub { color: var(--muted); font-size: 14px; line-height: 1.45; margin: 0 0 14px; }
 .field { display: block; font-size: 13px; color: var(--muted); margin: 10px 0; }
 .field select, .field input { display: block; width: 100%; margin-top: 6px; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: #0b1428; color: var(--text); font-size: 15px; }
