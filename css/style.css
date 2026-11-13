@@ -136,3 +136,6 @@ dialog a { color: var(--accent); }
 .fire-btn { right: auto; left: 50%; transform: translateX(-50%); bottom: calc(40px + env(safe-area-inset-bottom)); background: rgba(240,120,30,.6); }
 .fire-btn.on { background: rgba(255,170,60,.95); }
 #rebuildBtn { width: 100%; margin-top: 8px; }
+#hudBoost { height: 100%; width: 100%; background: #ffcf6e; }
+#hudBoost.low { background: #ff5a5a; }
+#hudBoostRow[hidden] { display: none; }

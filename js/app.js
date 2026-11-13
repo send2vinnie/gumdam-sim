@@ -54,8 +54,8 @@
   const D_UP = [0, Math.sin(D_PITCH), Math.cos(D_PITCH)];     // flight "up" in the dragon's native frame (yaw axis)
   const D_FWD = [0, -Math.cos(D_PITCH), Math.sin(D_PITCH)];   // flight "forward" in the native frame (wing-beat axis)
   const CHARACTERS = {
-    gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45] },
-    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, center: 6.0 * DRAGON_SCALE, eye: RIDER_EYE[1] * DRAGON_SCALE, eyeFwd: RIDER_EYE[0] * DRAGON_SCALE + 0.15, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M] }
+    gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, phys: { mass: 43.4, thrust: 7, climb: 5, rollRate: 45 * DEG, lift: "thrusters", stall: 0 }, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45] },
+    dragon: { name: "Dragon + rider (rideable " + DRAGON_HEIGHT_M + " m)", leanMax: 12, phys: { mass: 0.9, thrust: 14, climb: 9, rollRate: 110 * DEG, lift: "wings", stall: 22 }, center: 6.0 * DRAGON_SCALE, eye: RIDER_EYE[1] * DRAGON_SCALE, eyeFwd: RIDER_EYE[0] * DRAGON_SCALE + 0.15, height: DRAGON_HEIGHT_M, unit: "dragon heights", cams: [8 + 3 * DRAGON_HEIGHT_M, 20 + 8 * DRAGON_HEIGHT_M, 6 + 2.5 * DRAGON_HEIGHT_M] }
   };
   const PILOT_HEIGHT = 1.75;
   const BAR_HEIGHT = 22.18;        // centre of the closed fists in the pull-up rig (feet 0.6 m off the ground at full hang)
@@ -86,6 +86,8 @@
     : lowMem ? "verylow" : ({ low: "low", medium: "medium", high: "high" }[settings.quality] || (isTouch ? "low" : "medium"));
   settings.modelDetail = MODEL_NAMES[store.get("modelDetail", null)] ? store.get("modelDetail", null) : (isTouch ? "medium" : "high");
   settings.character = CHARACTERS[store.get("character", null)] ? store.get("character", null) : "gundam";
+  const DIFFICULTIES = { easy: "Easy", medium: "Medium", hard: "Hard" };
+  settings.difficulty = DIFFICULTIES[store.get("difficulty", null)] ? store.get("difficulty", null) : "medium";
   const CH = () => CHARACTERS[fly.character || settings.character];
   function modelUrl(kind) {
     const base = kind === "pullup" ? "models/gundam_rx78_pullup_18m" : "models/gundam_rx78_18m";
@@ -820,7 +822,7 @@ void main() {
   function placeAt(spawn) {
     fly.spawn = spawn;
     fly.lat = spawn.lat; fly.lon = spawn.lon; fly.az = spawn.heading || 0;
-    fly.vf = fly.vs = fly.vu = 0; fly.yawRate = 0; fly.lean = fly.bank = 0;
+    fly.vf = fly.vs = fly.vu = 0; fly.yawRate = 0; fly.lean = fly.bank = 0; fly.bankH = 0; fly.stamina = 1;
     fly.h = 40 + (spawn.alt || 150);  // Tokyo geoid ≈ +37 m; corrected to true AGL once tiles report ground
     fly.needsAglFix = spawn.alt || 150;
     fly.ground = undefined;
@@ -828,13 +830,52 @@ void main() {
 
   function updateFlight(dt) {
     readInput();
-    const boost = input.boost ? BOOST : 1;
-    const resp = 1 - Math.exp(-dt * 2.2);
+    const diff = settings.difficulty;
+    // boost gauge (Hard): drains while boosting, recharges otherwise; Easy/Medium have unlimited boost
+    if (fly.stamina === undefined) fly.stamina = 1;
+    let boosting = input.boost;
+    if (diff === "hard") {
+      if (boosting && fly.stamina > 0) fly.stamina = Math.max(0, fly.stamina - dt * 0.22);
+      else { boosting = false; fly.stamina = Math.min(1, fly.stamina + dt * (input.boost ? 0.04 : 0.12)); }
+    } else fly.stamina = 1;
+    fly.boosting = boosting;
+    const boost = boosting ? BOOST : 1;
     const tf = input.fwd >= 0 ? input.fwd * MAX_FWD * boost : input.fwd * MAX_BACK;
-    fly.vf += (tf - fly.vf) * resp;
-    fly.vs += (input.strafe * MAX_STRAFE * (input.boost ? 1.6 : 1) - fly.vs) * resp;
-    fly.vu += (input.vert * MAX_VERT * (input.boost ? 1.8 : 1) - fly.vu) * (1 - Math.exp(-dt * 3));
-    fly.yawRate += (input.turn * TURN_RATE - fly.yawRate) * (1 - Math.exp(-dt * 4));
+    const ts = input.strafe * MAX_STRAFE * (boosting ? 1.6 : 1), tu = input.vert * MAX_VERT * (boosting ? 1.8 : 1);
+    if (diff === "easy") {
+      // arcade: velocities follow the stick at once, no gravity or inertia, direct turns
+      fly.vf = tf; fly.vs = ts; fly.vu = tu; fly.yawRate = input.turn * TURN_RATE; fly.bankH = 0;
+    } else if (diff === "medium") {
+      const resp = 1 - Math.exp(-dt * 2.2);
+      fly.vf += (tf - fly.vf) * resp;
+      fly.vs += (ts - fly.vs) * resp;
+      const sink = fly.grounded || Math.abs(input.vert) > 0.05 ? 0 : -2.5;      // gentle sink without vertical thrust
+      fly.vu += ((Math.abs(input.vert) > 0.05 ? tu : sink) - fly.vu) * (1 - Math.exp(-dt * 3));
+      fly.yawRate += (input.turn * TURN_RATE - fly.yawRate) * (1 - Math.exp(-dt * 4));
+      fly.bankH = 0;
+    } else {
+      // Hard: forces per unit mass. Thrust accelerates, drag ~ v^2, gravity 9.81 against vertical thrust/lift.
+      const P = CH().phys, g = 9.81;
+      const aF = P.thrust * (boosting ? 1.9 : 1), vMax = MAX_FWD * (boosting ? BOOST : 1);
+      const kF = aF / (vMax * vMax), kS = P.thrust * 0.6 / (MAX_STRAFE * MAX_STRAFE), kU = (P.climb + 2) / (MAX_VERT * MAX_VERT * 1.8);
+      fly.vf += ((input.fwd >= 0 ? input.fwd * aF : input.fwd * aF * 0.5) - kF * fly.vf * Math.abs(fly.vf)) * dt;
+      fly.vs += (input.strafe * P.thrust * 0.6 - kS * fly.vs * Math.abs(fly.vs)) * dt;
+      // vertical: the Gundam's thrusters hold ~98% of its weight at neutral; the dragon's lift grows with airspeed (sinks/stalls when slow)
+      const speed = Math.hypot(fly.vf, fly.vs);
+      const hold = P.lift === "wings" ? g * (0.55 + 0.45 * Math.min(1, (speed / P.stall) ** 2)) : g * 0.98;
+      const up = hold + input.vert * (input.vert > 0 ? P.climb * (boosting ? 1.6 : 1) : g * 0.8);
+      // wings resist vertical motion more the faster the dragon flies (so a sink stops once it has airspeed)
+      const wingDamp = P.lift === "wings" ? 1.6 * Math.min(1.5, speed / P.stall) : 0;
+      fly.vu += (up - g - kU * fly.vu * Math.abs(fly.vu) - wingDamp * fly.vu) * dt;
+      if (fly.grounded && fly.vu < 0) fly.vu = 0;
+      // coordinated turns: the stick rolls the body; turn rate = g * tan(bank) / speed. No auto-level.
+      fly.bankH = Math.max(-60 * DEG, Math.min(60 * DEG, (fly.bankH || 0) + input.turn * P.rollRate * dt));
+      if (fly.grounded) fly.bankH *= Math.exp(-dt * 4);
+      const coordinated = g * Math.tan(fly.bankH) / Math.max(speed, 12);
+      // a little direct thruster yaw at hover for the Gundam, so it can still turn on the spot
+      const hoverYaw = P.lift === "wings" ? 0 : input.turn * TURN_RATE * 0.35 * Math.max(0, 1 - speed / 20);
+      fly.yawRate = Math.max(-TURN_RATE * 1.3, Math.min(TURN_RATE * 1.3, coordinated + hoverYaw));
+    }
     fly.az = (fly.az + fly.yawRate / DEG * dt + 360) % 360;
 
     // proposed move
@@ -879,7 +920,8 @@ void main() {
     const air = fly.grounded ? 0.15 : 1;
     // lean forward with speed, back when climbing and forward when diving
     const targetLean = ((fly.vf / (MAX_FWD * BOOST)) * CH().leanMax - (fly.vu / (MAX_VERT * 1.8)) * 18) * DEG * air;
-    const targetBank = (fly.yawRate / TURN_RATE) * 22 * DEG * air + (fly.vs / MAX_STRAFE) * 12 * DEG * air;
+    const targetBank = settings.difficulty === "hard" ? (fly.bankH || 0) * air + (fly.vs / MAX_STRAFE) * 8 * DEG * air
+      : (fly.yawRate / TURN_RATE) * 22 * DEG * air + (fly.vs / MAX_STRAFE) * 12 * DEG * air;
     const k = 1 - Math.exp(-dt * 3);
     fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k;
     // head: looks into the turn (up to 30 deg) and a little up/down with climbs and dives
@@ -918,7 +960,9 @@ void main() {
     $("hudAglMs").textContent = isFinite(agl) ? (agl / CH().height).toFixed(1) + " × " + CH().unit : "";
     $("hudElev").textContent = (fly.h - (demoMode ? 0 : 37)).toFixed(0);
     $("hudVs").textContent = fly.vu.toFixed(1);
-    $("hudMode").textContent = fly.grounded ? "LANDED" : input.boost ? "BOOST" : "HOVER";
+    $("hudMode").textContent = (fly.grounded ? "LANDED" : fly.boosting ? "BOOST" : settings.difficulty === "hard" && fly.vu < -6 ? "SINK" : "HOVER") + " · " + DIFFICULTIES[settings.difficulty].toUpperCase();
+    const hard = settings.difficulty === "hard"; $("hudBoostRow").hidden = !hard;
+    if (hard) { $("hudBoost").style.width = (fly.stamina * 100).toFixed(0) + "%"; $("hudBoost").classList.toggle("low", fly.stamina < 0.2); }
     $("impact").classList.toggle("on", fly.impactT > 0);
     $("loadingTiles").classList.toggle("on", tilesets.length > 0 && !allTilesLoaded() && fly.ground === undefined);
     drawCompass();
@@ -1169,6 +1213,15 @@ void main() {
     : "True scale: the mobile suit stands 18.0 m."; };
   $("characterSelect").value = settings.character; charNote();
   $("characterSelect").onchange = () => selectCharacter($("characterSelect").value);
+  // flight difficulty: start screen and Settings stay in sync, applied at once
+  const DIFF_NOTES = { easy: "Easy: arcade - stops when you let go, no gravity, direct turns.", medium: "Medium: some inertia and drag, gentle sink without vertical thrust.",
+    hard: "Hard: mass and momentum, full gravity, drag, banked turns, no auto-level; boost uses a recharging gauge." };
+  function setDifficulty(d) { if (!DIFFICULTIES[d]) return; settings.difficulty = d; store.set("difficulty", d);
+    for (const id of ["difficultySelect", "difficultySetting"]) { const el = $(id); if (el) el.value = d; }
+    $("difficultyNote").textContent = DIFF_NOTES[d]; fly.bankH = 0; }
+  $("difficultySelect").onchange = () => setDifficulty($("difficultySelect").value);
+  $("difficultySetting").onchange = () => setDifficulty($("difficultySetting").value);
+  setDifficulty(settings.difficulty);
   $("resumeBtn").onclick = togglePause;
   $("teleportBtn").onclick = () => { placeAt(spawns[+$("teleportSelect").value]); $("hudLoc").textContent = fly.spawn.name; togglePause(); };
   $("toLobbyBtn").onclick = async () => {

@@ -73,6 +73,17 @@ when landed) and swings its tail. The chase, far and side cameras and the cockpi
 cameras never go into buildings: a ray from the character toward the camera pulls the camera in front of any wall in the way
 (checked about 10-14 times a second), and it eases back out when the view is clear.
 
+## Flight difficulty
+Choose **Easy / Medium / Hard** on the start screen or in Settings (remembered, applied at once, shown on the HUD). It works the
+same with keyboard, gamepad and touch, for both characters.
+* **Easy (arcade):** speed follows the stick directly and you stop the moment you let go; no gravity or inertia; direct turns.
+* **Medium:** the default feel: some inertia and drag, auto-level, and a gentle sink (2.5 m/s) when you are not climbing.
+* **Hard (more physical):** forces per unit mass. The 43.4 t Gundam accelerates slowly (7 m/s² of thrust), the dragon is light
+  and nimble (14 m/s²). Drag grows with the square of speed, gravity is 9.81 m/s² against vertical thrust (the Gundam's
+  thrusters hold about 98% of its weight at neutral, so it slowly sinks; the dragon's lift comes from airspeed, so it sinks
+  when slow, below about 22 m/s). You turn by banking: left/right rolls the body, the turn rate follows the bank angle, and the
+  bank stays until you roll back (no auto-level). Boost drains the **BOOST** gauge on the HUD, which recharges when you let go.
+
 ## Weapons and destructible buildings
 Aim with the crosshair in the middle of the screen and fire (F, left click, gamepad RB/X, or the FIRE button on touch screens).
 * **Gundam - beam rifle:** the right arm swings up to aim along the crosshair (the arm and rifle are a separate part pivoted at

@@ -9,9 +9,9 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Widgets/widgets.css">
-<link rel="stylesheet" href="css/style.css?v=19">
+<link rel="stylesheet" href="css/style.css?v=20">
 <script src="https://cdn.jsdelivr.net/npm/cesium@1.123.0/Build/Cesium/Cesium.js"></script>
-<script src="config.js?v=19"></script>
+<script src="config.js?v=20"></script>
 </head>
 <body>
 <div id="cesiumContainer"></div>
@@ -34,6 +34,14 @@
         </select>
       </label>
       <p class="note" id="characterNote"></p>
+      <label class="field">Flight difficulty
+        <select id="difficultySelect">
+          <option value="easy">Easy (arcade)</option>
+          <option value="medium">Medium</option>
+          <option value="hard">Hard (realistic physics)</option>
+        </select>
+      </label>
+      <p class="note" id="difficultyNote"></p>
       <label class="field">Starting point in Tokyo
         <select id="spawnSelect"></select>
       </label>
@@ -61,6 +69,7 @@
   <div class="hud-left">
     <div class="hud-k">SPD</div><div class="hud-v"><span id="hudSpeed">0</span> <small>km/h</small></div>
     <div class="hud-k">THR</div><div class="bar"><div id="hudThrust"></div></div>
+    <div id="hudBoostRow" hidden><div class="hud-k">BOOST</div><div class="bar boost"><div id="hudBoost"></div></div></div>
   </div>
   <div class="hud-right">
     <div class="hud-k">ALT AGL</div><div class="hud-v"><span id="hudAgl">0</span> <small>m</small></div>
@@ -127,6 +136,13 @@
         <option value="high">High (desktop GPU)</option>
       </select>
     </label>
+    <label class="field">Flight difficulty
+      <select id="difficultySetting">
+        <option value="easy">Easy (arcade)</option>
+          <option value="medium">Medium</option>
+          <option value="hard">Hard (realistic physics)</option>
+      </select>
+    </label>
     <h3 class="sect">3D detail</h3>
     <p class="note">These two apply immediately. Lower them if the game is slow or crashes on your phone.</p>
     <label class="field">City detail
@@ -166,6 +182,7 @@
           <li><b>F</b> or <b>left click</b> fire (Gundam: beam rifle · dragon: fireball)</li>
           <li><b>V</b> camera · mouse drag to look · wheel to zoom</li>
           <li><b>Esc</b> pause menu</li>
+          <li>Difficulty (start screen or Settings): <b>Easy</b> arcade · <b>Medium</b> · <b>Hard</b> - full gravity and momentum; turn by banking (A/D rolls, the bank stays until you roll back); boost drains the BOOST gauge</li>
         </ul></div>
       <div><h3>Gamepad (Xbox-style)</h3>
         <ul>
@@ -203,6 +220,6 @@
   </form>
 </dialog>
 
-<script src="js/app.js?v=19"></script>
+<script src="js/app.js?v=20"></script>
 </body>
 </html>
