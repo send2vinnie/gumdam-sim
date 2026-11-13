@@ -93,6 +93,11 @@ fill light stays on, because without it walls facing away from the sun turn blac
 Measured with step 2 (software renderer, automatic resolution on): start screen 74 -> 69 ms/frame and draw calls
 269 -> 154; Shinjuku at 250 m 140 -> 130 ms/frame, city textures 206 -> 60 MB.
 
+**Choosing Low automatically.** On first launch, phones and weak computers (4 GB memory or less, 2 CPU cores or less, or
+a software-only GPU) start on Low. Otherwise the start screen measures the frame rate once (after a 3 s warm-up, over 6 s):
+below 20 FPS on Medium, Low is chosen from the next start, with a "Switch now" button. Once you pick a quality in Settings,
+your choice is kept. The pause menu shows the frame rate while flying, the current resolution and the quality in use.
+
 On every quality setting:
 * **Tokyo areas stream by distance.** Each of the 6 Tokyo areas is opened when the camera comes within the draw distance
   + 1 km of it (Low 4 km, others 7 km) and dropped, freeing its memory, 1.5 km beyond that. The Taipei start screen loads no

@@ -70,9 +70,22 @@
     set(k, v) { try { localStorage.setItem("gfs." + k, JSON.stringify(v)); } catch (e) { /* ignore */ } }
   };
   const isTouch = window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+  // first launch: phones and weak computers (little memory or CPU, or a software-only GPU) start on Low graphics
+  function weakDevice() {
+    if (isTouch) return true;
+    if ((navigator.deviceMemory || 8) <= 4 || (navigator.hardwareConcurrency || 8) <= 2) return true;
+    try {
+      const gl = document.createElement("canvas").getContext("webgl"); if (!gl) return true;
+      const ext = gl.getExtension("WEBGL_debug_renderer_info"); const r = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : "";
+      const lose = gl.getExtension("WEBGL_lose_context"); if (lose) lose.loseContext();
+      return /swiftshader|llvmpipe|software|basic render/i.test(r);
+    } catch (e) { return false; }
+  }
+  const storedQuality = store.get("quality", null);
   const settings = {
     key: (store.get("key", "") || CFG.googleMapsApiKey || "").trim(),
-    quality: store.get("quality", isTouch ? "low" : "medium"),
+    quality: storedQuality || (weakDevice() ? "low" : "medium"),
+    qualityAuto: !storedQuality,   // not chosen by the user yet: the start screen checks the frame rate once
     invertY: store.get("invertY", false),
     showFps: store.get("showFps", false),
     autoRes: store.get("autoRes", true)
@@ -1325,10 +1338,12 @@ void main() {
   }
   // Low: 30 FPS cap (steadier frames, less heat and battery). Paused: 10 FPS (the menu still reads the gamepad).
   const FRAME_CAP = LOW_GFX ? 30 : undefined;
+  let flyFps = 0;   // smoothed frame rate while flying, shown in the pause menu
   if (FRAME_CAP) viewer.targetFrameRate = FRAME_CAP;
   scene.preUpdate.addEventListener(() => {
     const now = performance.now(); const rawDt = (now - last) / 1000; const dt = Math.min(0.1, rawDt); last = now;
     updateWards(); updateAutoRes(rawDt);
+    if (state.mode === "fly" && rawDt > 0 && rawDt < 1) flyFps = flyFps ? flyFps * 0.97 + 0.03 / rawDt : 1 / rawDt;
     if (state.mode === "fly") { updateFlight(dt); updateWeapons(dt); updateCamera(dt); applyShake(dt); }
     else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); }
     else if (state.mode === "pause") readInput();
@@ -1337,7 +1352,8 @@ void main() {
   });
 
   function togglePause() {
-    if (state.mode === "fly") { state.mode = "pause"; $("pause").hidden = false; $("touch").hidden = true; viewer.clock.shouldAnimate = false; viewer.targetFrameRate = 10; }
+    if (state.mode === "fly") { state.mode = "pause"; $("pause").hidden = false; $("touch").hidden = true; viewer.clock.shouldAnimate = false; viewer.targetFrameRate = 10;
+      $("perfInfoPause").textContent = "Performance: " + (flyFps ? flyFps.toFixed(0) + " FPS while flying" : "measuring…") + " · resolution " + Math.round(viewer.resolutionScale * 100) + " %" + (settings.autoRes ? " (automatic)" : "") + " · graphics " + settings.quality + (FRAME_CAP ? " (" + FRAME_CAP + " FPS cap)" : ""); }
     else if (state.mode === "pause") { state.mode = "fly"; $("pause").hidden = true; $("touch").hidden = !isTouch; viewer.clock.shouldAnimate = true; viewer.targetFrameRate = FRAME_CAP; last = performance.now(); }
   }
 
@@ -1407,5 +1423,22 @@ void main() {
     try { await buildLobby(); } catch (e) { console.error(e); showFatal("Could not build the start scene: " + ((e && (e.stack || e.message)) || e)); setStatus("Could not build the start scene: " + (e.message || e), true); }
     $("startBtn").disabled = false; $("startBtn").textContent = "Launch";
     window.GFS.ready = true;
+    checkFirstLaunchSpeed();
   })();
+  // first launch on Medium: if the start screen runs below 20 FPS, choose Low from the next start and offer to switch now
+  function checkFirstLaunchSpeed() {
+    if (!settings.qualityAuto || LOW_GFX) return;
+    let n = -1, t0 = 0; const start = performance.now();   // skip the first 3 s (shader compiles, tile loads)
+    const off = scene.postRender.addEventListener(() => {
+      const now = performance.now(); if (now - start < 3000) return;
+      if (n < 0) { n = 0; t0 = now; return; }
+      n++; const t = now - t0; if (t < 6000) return;
+      off(); const fps = n / (t / 1000);
+      window.GFS.firstLaunchFps = fps;
+      if (fps >= 20 || state.mode !== "lobby") return;
+      store.set("quality", "low");
+      setStatus("This device runs Medium graphics at " + fps.toFixed(0) + " FPS, so Low is chosen from the next start (change it in Settings). ", true);
+      const b = document.createElement("button"); b.textContent = "Switch now"; b.onclick = () => location.reload(); $("status").appendChild(b);
+    });
+  }
 })();
