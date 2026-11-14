@@ -1076,12 +1076,26 @@ void main() {
   // x, y: CSS pixels from the canvas corner. scene.pick converts to drawing-buffer pixels itself, so they must not be
   // pre-scaled (the drawing buffer is smaller than the page when the resolution scale or automatic resolution is below 100 %).
   function pickedCharacter(x, y) {
-    let picked; try { picked = scene.pick(new C.Cartesian2(x, y)); } catch (e) { picked = undefined; }
-    const prim = picked && picked.primitive;
-    if (!prim) return null;
-    if (prim === lobby.dragon || prim === lobby.trainer) return "dragon";
-    if (prim === lobby.models[0]) return "gundam";
-    return null;
+    // the nearest character under the point, looking through the pull-up rig, the mat and the pilots in front of them
+    // (a plain pick returned the rig when a tap on the Gundam landed on its bar or posts)
+    let list; try { list = scene.drillPick(new C.Cartesian2(x, y), 4); } catch (e) { list = []; }
+    for (const picked of list) {
+      const prim = picked && picked.primitive;
+      if (prim === lobby.dragon || prim === lobby.trainer) return "dragon";
+      if (prim === lobby.models[0]) return "gundam";
+    }
+    // no character in the pick: the animated pull-up Gundam's pick shape doesn't always match the drawn pose, so a tap on
+    // its visible legs could miss it. Fall back to the character whose on-screen bounds contain the tap (nearest centre).
+    let best = null, bd = Infinity;
+    for (const [name, m, k] of [["gundam", lobby.models[0], 0.6], ["dragon", lobby.dragon, 0.8]]) {
+      if (!m || !m.ready || !m.boundingSphere) continue;
+      const bs = m.boundingSphere, c = C.SceneTransforms.worldToWindowCoordinates(scene, bs.center); if (!c) continue;
+      const edge = C.Cartesian3.add(bs.center, C.Cartesian3.multiplyByScalar(camera.rightWC, bs.radius, new C.Cartesian3()), new C.Cartesian3());
+      const e = C.SceneTransforms.worldToWindowCoordinates(scene, edge); if (!e) continue;
+      const rpx = Math.hypot(e.x - c.x, e.y - c.y) * k, d = Math.hypot(x - c.x, y - c.y) / Math.max(rpx, 1);
+      if (d <= 1 && d < bd) { bd = d; best = name; }
+    }
+    return best;
   }
   function refreshPickHighlight() {
     const sel = settings.character;
@@ -1146,6 +1160,7 @@ void main() {
   $("collapseBtn").onclick = () => setLobbyCollapsed(!$("lobbyCard").classList.contains("collapsed"));
   $("showMenuBtn").onclick = () => { setLobbyCollapsed(true); setLobbyPanelOff(false); };
   let tap = null;
+  let lastTap = null;   // the last tap's outcome (tests read it through GFS.lastTap)
   canvas.addEventListener("pointerdown", (e) => { tap = e.isPrimary ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp, moved: 0 } : null; });
   canvas.addEventListener("pointermove", (e) => { if (tap && e.pointerId === tap.id) tap.moved = Math.max(tap.moved, Math.hypot(e.clientX - tap.x, e.clientY - tap.y)); });
   canvas.addEventListener("pointercancel", () => { tap = null; });
@@ -1161,14 +1176,15 @@ void main() {
     const t = tap; tap = null;
     if (t && t.id === e.pointerId && state.mode === "fly" && e.pointerType === "mouse" && e.button === 0 &&
         Math.max(t.moved, Math.hypot(e.clientX - t.x, e.clientY - t.y)) <= 6 && e.timeStamp - t.t < 400) { requestFire(); return; }
-    if (!t || t.id !== e.pointerId || state.mode !== "lobby" || $("lobby").hidden) return;
+    if (!t || t.id !== e.pointerId || state.mode !== "lobby" || $("lobby").hidden) { lastTap = { why: !t ? "no tap" : t.id !== e.pointerId ? "other pointer" : "not lobby" }; return; }
     // only a quick tap with little movement counts; dragging to look around does not.
     // Event timestamps are used so a busy phone (frames still rendering) doesn't turn a quick tap into a "long press".
     const moved = Math.max(t.moved, Math.hypot(e.clientX - t.x, e.clientY - t.y));
-    if (moved > (e.pointerType === "touch" ? 12 : 8) || e.timeStamp - t.t > 500) return;
+    lastTap = { moved: +moved.toFixed(1), ms: +(e.timeStamp - t.t).toFixed(0) };
+    if (moved > (e.pointerType === "touch" ? 12 : 8) || e.timeStamp - t.t > 500) { lastTap.why = "drag or long press"; return; }
     // tapping a character selects it; tapping anywhere else hides / shows the panel
     const r = canvas.getBoundingClientRect();
-    const ch = pickedCharacter(e.clientX - r.left, e.clientY - r.top);
+    const ch = pickedCharacter(e.clientX - r.left, e.clientY - r.top); lastTap.ch = ch;
     if (ch) { selectCharacter(ch); return; }
     const off = !$("lobby").classList.contains("panel-off");
     if (!off) setLobbyCollapsed(true);
@@ -1973,7 +1989,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, cpuHeightAt, cpuRay, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, cpuHeightAt, cpuRay, get lastTap() { return lastTap; }, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";

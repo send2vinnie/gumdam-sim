@@ -198,7 +198,9 @@ watches. Beside it, the trainer (1.75 m) trains the dragon (4 m) to jump: the dr
 wing beats and lands with a small squash, while the trainer points up for each jump and watches.
 **Choose your character by clicking or tapping it** (the Gundam, or the dragon / trainer): the choice gets a yellow outline,
 a "Selected: ..." label, syncs with the Character menu and is remembered; the camera drifts toward the selected character.
-Dragging still turns the camera. The app searches the 3D tiles within 250 m of the configured point for open, level ground so the rig sits on the
+A tap looks through the pull-up rig and the pilots in front, and a tap within a character's outline on screen counts even
+when the pick misses it (the animated pull-up Gundam's pick shape doesn't always match its drawn pose). Dragging still
+turns the camera. The app searches the 3D tiles within 250 m of the configured point for open, level ground so the rig sits on the
 plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 
 ## Files
