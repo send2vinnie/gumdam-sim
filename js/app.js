@@ -180,6 +180,7 @@
   // Low graphics: draw only what is near. The far plane cuts everything (city tiles, models, effects) beyond RENDER_DISTANCE,
   // denser fog hides the edge, and the canvas renders at 75 % resolution.
   const LOW_GFX = settings.quality === "low";
+  const HIGH_GFX = settings.quality === "high";   // High: PLATEAU's original Tokyo tiles (see openWard)
   const RENDER_DISTANCE = LOW_GFX ? 3000 : null;
   if (LOW_GFX) { camera.frustum.far = RENDER_DISTANCE; scene.fog.density = 7.5e-4; scene.fog.minimumBrightness = 0.35; viewer.resolutionScale = 0.75;
     // the sky dome lies beyond the far plane, so paint a hazy sky instead; the cut-off then reads as distance haze
@@ -300,6 +301,7 @@ void main() {
   const LOCAL_WARDS = ["shinjuku", "shibuya", "minato", "chiyoda", "sumida", "koto"];
   const LOCAL_CREDITS = {
     plateau: "3D都市モデル Project PLATEAU（国土交通省）を加工して作成",
+    plateauOriginal: "出典：国土交通省 PLATEAU 3D都市モデル（東京都 2025 LOD2）",
     osm: "© OpenStreetMap contributors (ODbL)"
   };
   async function loadGround() {
@@ -354,9 +356,9 @@ void main() {
     await Promise.all(LOCAL_WARDS.map(async (w) => {
       const j = await (await fetch("cities/tokyo/" + w + "/tileset.json")).json();
       const [west, south, east, north] = j.root.boundingVolume.region;
-      wardSlots.push({ name: w, west, south, east, north, ts: null, loading: null, want: false });
+      wardSlots.push({ name: w, west, south, east, north, ts: null, loading: null, want: false, json: HIGH_GFX ? j : null, original: false, failed: 0 });
     }));
-    for (const txt of [LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
+    for (const txt of [HIGH_GFX ? LOCAL_CREDITS.plateauOriginal : LOCAL_CREDITS.plateau, LOCAL_CREDITS.osm]) viewer.creditDisplay.addStaticCredit(new C.Credit(txt, true));
     await loadNangang(ground);
   }
 
@@ -368,19 +370,56 @@ void main() {
     const dy = lat < s.south ? s.south - lat : lat > s.north ? lat - s.north : 0;
     return Math.hypot(dx * R_EARTH * Math.cos(lat), dy * R_EARTH);
   }
+  // High: PLATEAU's original full-detail tiles, streamed from PLATEAU's public 3D Tiles hosting (the PLATEAU VIEW data
+  // catalog, CORS open). The bundled copies are the same tile tree, clipped to the play areas with textures reduced to
+  // 1024 px, so the bundled tileset.json is reused with each tile pointing at its original: the same areas, levels of
+  // detail and feature ids, only sharper textures. The official catalog API gives the current location of each ward's
+  // tiles. If it can't be reached, or tiles keep failing, that area falls back to the bundled copy.
+  const PLATEAU_CODES = { shinjuku: 13104, shibuya: 13113, minato: 13103, chiyoda: 13101, sumida: 13107, koto: 13108 };
+  async function originalWardUrl(s) {
+    const r = await fetch("https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/" + PLATEAU_CODES[s.name] + "-bldg-lod2-texture-2025/tileset.json");
+    if (!r.ok) throw new Error("PLATEAU catalog " + r.status);
+    const cat = await r.json();
+    const src = cat.root && cat.root.children && cat.root.children[0] && cat.root.children[0].content && cat.root.children[0].content.uri;
+    if (!/^https:\/\/[^/]+\/.*tileset\.json$/.test(src || "")) throw new Error("PLATEAU catalog: no tileset for " + s.name);
+    const base = src.replace(/tileset\.json$/, "");
+    const j = JSON.parse(JSON.stringify(s.json));
+    (function walk(t) { if (t.content && t.content.uri) t.content.uri = base + t.content.uri; (t.children || []).forEach(walk); })(j.root);
+    return URL.createObjectURL(new Blob([JSON.stringify(j)], { type: "application/json" }));
+  }
   async function openWard(s) {
-    const ts = await C.Cesium3DTileset.fromUrl("cities/tokyo/" + s.name + "/tileset.json", {
+    let url = "cities/tokyo/" + s.name + "/tileset.json", blob = null;
+    s.original = false;
+    if (HIGH_GFX && s.json && s.failed < 3) {
+      try { blob = url = await originalWardUrl(s); s.original = true; }
+      catch (e) { console.warn("PLATEAU original tiles unavailable for " + s.name + ", using the bundled copy", e); s.failed = 3; }
+    }
+    let ts;
+    try { ts = await C.Cesium3DTileset.fromUrl(url, {
         maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
-        cacheBytes: LOW_GFX ? 64 * 1024 * 1024 : lowMem ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
+        // the originals' textures are 4096 px (16 times the bundled 1024 px), so they get a bigger budget: 1.5 GB per area.
+        // Past it Cesium draws coarser tiles until the memory fits (see README: High graphics).
+        cacheBytes: s.original ? 1536 * 1024 * 1024 : LOW_GFX ? 64 * 1024 * 1024 : lowMem ? 128 * 1024 * 1024 : Math.min(QUALITY.cacheBytes, 512 * 1024 * 1024),
         maximumCacheOverflowBytes: LOW_GFX ? 32 * 1024 * 1024 : undefined,   // Low: half-size textures, so half the budget gives the same detail
         cullRequestsWhileMoving: true, cullRequestsWhileMovingMultiplier: LOW_GFX ? 30 : 60,   // skip tile requests while the camera moves fast
         dynamicScreenSpaceError: true,
         enablePick: true,   // keep a CPU copy of the geometry for the CPU height/ray queries (else each one reads it back from the GPU)
         imageBasedLighting: skyLight(),
         shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
-      });
+      }); }
+    catch (e) { if (!s.original) throw e; console.warn("PLATEAU original tileset failed for " + s.name + ", using the bundled copy", e); s.failed = 3; return openWard(s); }
+    finally { if (blob) URL.revokeObjectURL(blob); }
     ts.tileLoad.addEventListener((tile) => reapplyHidden(tile));   // destroyed buildings stay destroyed when tiles reload
+    if (s.original) ts.tileFailed.addEventListener((err) => {   // original tiles keep failing: reopen this area from the bundled copy
+      console.warn("PLATEAU tile failed", err && err.url, err && err.message);
+      if (++s.failed === 3) setTimeout(() => { if (s.ts !== ts) return; closeWard(s); updateWards(true); }, 0);
+    });
     return ts;
+  }
+  function closeWard(s) {
+    const i = tilesets.indexOf(s.ts); if (i >= 0) tilesets.splice(i, 1);
+    scene.primitives.remove(s.ts);   // destroys it and frees its tiles
+    s.ts = null;
   }
   // called about once a second (and right after a teleport): open areas near the camera, drop far ones
   let wardCheckT = 0;
@@ -398,11 +437,7 @@ void main() {
           s.ts = ts; ts.maximumScreenSpaceError = CITY_SSE[settings.cityDetail];
           scene.primitives.add(ts); tilesets.push(ts);
         }).catch((e) => { s.loading = null; console.error(e); });
-      } else if (!s.want && s.ts) {
-        const i = tilesets.indexOf(s.ts); if (i >= 0) tilesets.splice(i, 1);
-        scene.primitives.remove(s.ts);   // destroys it and frees its tiles
-        s.ts = null;
-      }
+      } else if (!s.want && s.ts) closeWard(s);
     }
   }
   async function loadNangang(ground) {

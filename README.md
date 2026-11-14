@@ -19,6 +19,18 @@ work offline afterwards:
   sets were checked too: for Taiwan they hold no more than OSM, and Taiwan's official 3D models need a citizen-certificate
   login to download.
 
+**High graphics: PLATEAU's original tiles.** On High, the Tokyo buildings are streamed from PLATEAU's own public 3D Tiles
+hosting instead of the bundled copies: the same tile tree, levels of detail and feature ids, but with the original 4096 px
+texture atlases (the bundled copies use 1024 px). The game asks PLATEAU VIEW's official data catalog
+(`api.plateauview.mlit.go.jp/datacatalog/3dtiles/<ward code>-bldg-lod2-texture-2025/tileset.json`) where each ward's
+tiles are, and reuses the bundled `tileset.json` with each tile pointing at its original on
+`assets.cms.plateau.reearth.io`, so the play areas are exactly the same as on Low and Medium. Both hosts allow
+cross-site requests (CORS `*`). The originals are not stored by the game or cached by its service worker (only the browser's
+own HTTP cache keeps them, for an hour). If the catalog can't be reached, or an area's tiles fail 3 times, that area
+falls back to the bundled copy. The data is used under the PLATEAU site policy (PDL 1.0, compatible with CC BY 4.0), with
+the source credit on screen and in Credits. Low and Medium always use the bundled copies (and Low halves their textures
+again in the browser); High never reduces the textures.
+
 The start-screen location and the Tokyo starting points are `LOBBY` and `SPAWNS` near the top of `js/app.js`.
 `config.js` is no longer used.
 
@@ -77,6 +89,23 @@ distance shortens, along the same line, so the look direction stays locked to th
 spot and just beside it, checked about 10-14 times a second) give a steady distance at thin edges; the camera eases in within
 about 0.15 s, stays in until the way has been clear for half a second, then eases out slowly. Looking up near the ground
 brings the camera closer instead of tilting the view.
+
+## Graphics quality: High
+High (desktop GPUs) streams PLATEAU's original tiles (see *City maps*), with anti-aliasing, shadows and full resolution.
+The original textures are 16 times the memory of the bundled ones (a detailed tile holds about 64 MB of texture instead of
+4 MB), so each area gets a 1.5 GB tile budget (512 MB on Medium). When a view needs more, Cesium draws coarser tiles until
+it fits, so up close the buildings are sharper than on Medium, but further away High can show coarser tiles.
+Measured in Nishi-Shinjuku at the starting point (NVIDIA T1200 4 GB, 1280x720, automatic resolution off):
+
+| | Medium (bundled) | High (PLATEAU originals) |
+|---|---|---|
+| Tile data downloaded (spawn, 6 shots, one close-up) | 307 MB (from the game) | about 610 MB (from PLATEAU) |
+| Tiles loaded | 127 | 82 (limited by the memory budget) |
+| Tile textures in GPU memory | 355 MB | 1.9 GB |
+| Tile geometry | 66 MB | 35 MB |
+| JavaScript heap | 155 MB | 136-228 MB |
+| Frame rate (hovering, 10 s) | 60 FPS, 95th percentile 18.6 ms | 59 FPS, 95th percentile 18.8 ms |
+| Time to load the area | 6 s (local server) | 18-23 s (over the internet) |
 
 ## Graphics quality: Low
 **Low** (the default on phones) draws only what is near: everything beyond **3 km** is not rendered (the city fades into a hazy
