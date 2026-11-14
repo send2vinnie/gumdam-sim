@@ -1,8 +1,11 @@
 // Build models/dragon.glb with the rider merged in and skinned to the dragon's joints.
 // Dragon: as build_dragon.js (flight attitude, 5 joints: body, head, wingL, wingR, tail).
-// Rider (Pokemon Trainer T-pose): leans forward, sits astride the dragon's lower neck with thighs spread and calves hugging it,
-// both hands on the horns (2-bone arm IK). Torso and legs are bound to the body joint; the arms blend to the head joint
-// toward the hands, so the hands stay on the horns when the head turns. No extra joints.
+// Rider (Pokemon Trainer T-pose): leans forward, sits astride the dragon's lower neck like riding a horse (thighs out around
+// the neck, knees bent ~95 deg, shins hanging down its sides), both hands gripping the horns from behind (2-bone arm IK with
+// the elbows bent ~30 deg and pointing out, one hinge per elbow so the arm doesn't twist there, forearms rolled so the palms
+// face forward). Hip, knee and elbow bends interpolate rotations (not positions), so the skin keeps its volume. Torso and legs
+// are bound to the body joint; the arms blend to the head joint toward the hands, so the hands stay on the horns when the
+// head turns. No extra joints. Afterwards run tools/build_dragon_legs.js on the output to add the dragon's walking legs.
 // Rider size is fixed at 1.75 m for a dragon of DRAGON_HEIGHT_M (default 4.0): k = rider native -> dragon native units.
 // usage: node build_dragon_rider.js <dragonDir> <riderDir> <out.glb> [DRAGON_HEIGHT_M]
 const fs = require("fs"), path = require("path");
@@ -12,9 +15,13 @@ const DRAGON_HEIGHT_M = +(dhS || 4.0), DRAGON_NATIVE_H = 18.16, RIDER_NATIVE_H =
 const k = (RIDER_M / DRAGON_HEIGHT_M * DRAGON_NATIVE_H) / RIDER_NATIVE_H;   // rider native unit -> dragon native unit
 const DEG = Math.PI / 180;
 // rider pose parameters (rider native: x fwd, y left, z up)
-const P = { lean: 46 * DEG, headUp: -22 * DEG, thigh: -10 * DEG, splay: 80 * DEG, knee: 35 * DEG, kneeIn: 0,
-  seat: [12.9, 6.05, 0], seatNy: -1.8, seatLift: -0.2, gripBack: 0.35 };   // pelvis rests on the neck; the hug pass keeps the legs just outside it // seat on the lower neck (flight frame), lift above the neck top
-if (process.env.RIDER_POSE) { const o = JSON.parse(process.env.RIDER_POSE); for (const [kk, v] of Object.entries(o)) P[kk] = ["seat", "seatNy", "seatLift", "gripBack"].includes(kk) ? v : v * DEG; }
+// legs: thigh and shin directions for the left leg (the right mirrors y), like riding a horse: thighs out around the neck,
+// shins hanging down and a little back along its sides (knee bent about 95 deg). The hug pass keeps them just outside it.
+// arms: the torso leans forward (at least `lean`, more if needed) until both hands reach the horns with the elbows bent
+// about `elbow` degrees; elbows point out and down, the forearms roll so the palms face forward onto the horns.
+const P = { lean: 46 * DEG, headUp: -22 * DEG, legT: [0.35, 0.9, -0.25], legS: [-0.6, -0.05, -0.8], elbow: 30 * DEG,
+  seat: [12.9, 6.05, 0], seatNy: -1.8, seatLift: -0.36, gripBack: 0.5 };   // seat on the lower neck (flight frame), lift above the neck top
+if (process.env.RIDER_POSE) { const o = JSON.parse(process.env.RIDER_POSE); for (const [kk, v] of Object.entries(o)) P[kk] = ["seat", "seatNy", "seatLift", "gripBack", "legT", "legS"].includes(kk) ? v : v * DEG; }
 const CHECK_ONLY = !!process.env.CHECK_ONLY;
 const HIP_Z = 8.4, HIP_Y = 0.95, KNEE_Z = 4.4, SH_Z = 13.1, SH_Y = 2.15, EL_Y = 5.0, PALM_Y = 7.9, NECK_Z = 14.7;
 const ss = L.ss;
@@ -63,16 +70,34 @@ for (const [side, key] of [[1, "L"], [-1, "R"]]) {
 }
 // torso lean / neck tilt transforms (rider native)
 const lean = (p) => rot(p, [0, 0, HIP_Z], [0, 1, 0], P.lean);
+// rotation (3x3 rows) taking the frame (axis a0, hinge h0) onto (a1, h1); both pairs orthonormal
+function frameMap(a0, h0, a1, h1) { const c0 = cross(a0, h0), c1 = cross(a1, h1);
+  return [0, 1, 2].map((i) => [0, 1, 2].map((j) => a1[i] * a0[j] + h1[i] * h0[j] + c1[i] * c0[j])); }
+// legs: thigh and shin turned as rigid pieces about the hip and the knee, sharing one knee hinge (no twist at the knee)
+const LEG = {};
+for (const side of [1, -1]) {
+  const T = nrm([P.legT[0], side * P.legT[1], P.legT[2]]), S = nrm([P.legS[0], side * P.legS[1], P.legS[2]]);
+  const down = [0, 0, -1], hinge0 = [0, 1, 0];                        // T-pose: leg straight down, knee bends about +y
+  const n = nrm(cross(T, S));                                          // posed knee hinge
+  const H0 = [0, side * HIP_Y, HIP_Z], K0 = [0, side * HIP_Y, KNEE_Z];
+  const Rt = frameMap(down, hinge0, T, n), Rs = frameMap(down, hinge0, S, n);
+  // the thigh's turn as axis + angle, so the hip blend can turn part of the way (no collapse at the groin)
+  const tr = Rt[0][0] + Rt[1][1] + Rt[2][2], ang = Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2)));
+  const axis = nrm([Rt[2][1] - Rt[1][2], Rt[0][2] - Rt[2][0], Rt[1][0] - Rt[0][1]]);
+  LEG[side] = { H0, K0, Rt, Rs, n, axis, ang, K: add(H0, mv(Rt, sub(K0, H0))), bend: Math.acos(Math.max(-1, Math.min(1, dot(T, S)))) };
+}
 // first pass: pose legs + torso to find the seat height (pelvis bottom)
-function legPose(p) {
-  const side = p[1] >= 0 ? 1 : -1; let q = p;
+function legPose(p, n) {
+  const side = p[1] >= 0 ? 1 : -1;
   const wl = ss(9.3, 7.6, p[2]) * ss(0.05, 0.45, Math.abs(p[1]) + 0.3);
-  if (wl <= 0) return p;
-  q = lerp(q, rot(q, [0, side * HIP_Y, KNEE_Z], [0, 1, 0], P.knee), ss(5.0, 3.8, p[2]));
-  q = lerp(q, rot(q, [0, side * HIP_Y, KNEE_Z], [1, 0, 0], side * P.kneeIn), ss(5.0, 3.8, p[2]));      // calves turn in to hug the neck
-  q = lerp(q, rot(q, [0, side * HIP_Y, HIP_Z], [0, 1, 0], P.thigh), wl);
-  q = lerp(q, rot(q, [0, side * HIP_Y, HIP_Z], [1, 0, 0], -side * P.splay), wl);
-  return q;
+  if (wl <= 0) return n ? [p, n] : p;
+  // hip: turn part of the thigh's rotation (wl); knee: bend about the shared hinge by part of the bend (tk).
+  // Rotations are interpolated, not positions, so the skin keeps its volume at the groin and the knee.
+  const G = LEG[side], tk = ss(5.0, 3.8, p[2]);
+  const hipTurn = (v, c) => rot(v, c, G.axis, G.ang * wl);
+  let q = hipTurn(p, G.H0); q = rot(q, add(G.H0, rot(sub(G.K0, G.H0), [0, 0, 0], G.axis, G.ang * wl)), G.n, G.bend * tk * wl);
+  if (!n) return q;
+  return [q, nrm(rot(hipTurn(n, [0, 0, 0]), [0, 0, 0], G.n, G.bend * tk * wl))];
 }
 const RP = [];
 R.j.meshes.forEach((m) => m.primitives.forEach((p) => {
@@ -80,38 +105,57 @@ R.j.meshes.forEach((m) => m.primitives.forEach((p) => {
   const I = p.indices !== undefined ? R.read(p.indices) : Pp.map((_, i) => i);
   RP.push({ P0: Pp, N0: N, T, I, material: p.material });
 }));
-const pelvis = RP.flatMap((q) => q.P0.filter((p) => Math.abs(p[1]) < 1.2 && Math.abs(p[0]) < 1.6 && p[2] > 5 && p[2] < 10).map(legPose));
+const pelvis = RP.flatMap((q) => q.P0.filter((p) => Math.abs(p[1]) < 1.2 && Math.abs(p[0]) < 1.6 && p[2] > 5 && p[2] < 10).map((p) => legPose(p)));
 seatZr = Math.min(...pelvis.map((p) => p[2]));
-// arm IK (rider native, after lean): shoulder S, palm target H; elbow out-and-down
+// arm IK (rider native, after lean): shoulder S, palm target H on the horn; elbow out and down, bent about P.elbow.
+// The torso leans further forward (up to 75 deg) if the horns are too far for that bend.
 const ik = {};
+const armA = SH_Y < EL_Y ? EL_Y - SH_Y : 0, armB = PALM_Y - EL_Y;
+const reachAt = (bend) => Math.sqrt(armA * armA + armB * armB + 2 * armA * armB * Math.cos(bend));   // shoulder-palm distance for an elbow bend
+const gripOf = (hs) => lerp(flightToRider(hornTipF[hs]), flightToRider(hornBaseF[hs]), P.gripBack);
+const leanFor = (l) => (p) => rot(p, [0, 0, HIP_Z], [0, 1, 0], l);
+{ let l = P.lean; const need = reachAt(P.elbow * 0.8);
+  while (l < 75 * DEG && [[1, "L"], [-1, "R"]].some(([sd, hs]) => len(sub(gripOf(hs), leanFor(l)([0, sd * SH_Y, SH_Z]))) > need)) l += 0.5 * DEG;
+  P.lean = l; }
 for (const [side, hs] of [[1, "L"], [-1, "R"]]) {
   const S0 = [0, side * SH_Y, SH_Z], E0 = [0, side * EL_Y, SH_Z], H0 = [0, side * PALM_Y, SH_Z];
   const S = lean(S0);
-  const tip = flightToRider(hornTipF[hs]), base = flightToRider(hornBaseF[hs]);
-  const H = lerp(tip, base, P.gripBack);
-  const a = len(sub(E0, S0)), b = len(sub(H0, E0)); const dv = sub(H, S); const d = Math.min(len(dv), a + b - 1e-3);
+  const H = gripOf(hs);
+  const a = armA, b = armB; const dv = sub(H, S); const d = Math.min(len(dv), reachAt(P.elbow * 0.5));
   const u = nrm(dv); const xC = (a * a - b * b + d * d) / (2 * d), r = Math.sqrt(Math.max(0, a * a - xC * xC));
-  const C = add(S, mul(u, xC)); let want = [S[0] - 1, S[1] + side * 3, S[2] - 2]; let v = sub(want, C); v = sub(v, mul(u, dot(v, u)));
+  const C = add(S, mul(u, xC)); const want = [S[0] - 0.5, S[1] + side * 1.5, S[2] - 4.0]; let v = sub(want, C); v = sub(v, mul(u, dot(v, u)));
   const E = len(v) > 1e-6 ? add(C, mul(nrm(v), r)) : add(S, mul(u, a));
   const Hreach = add(E, mul(nrm(sub(H, E)), b));
-  ik[side] = { S0, E0, H0, S, E, H: Hreach, target: H, R1: rotFromTo(nrm(sub(E0, S0)), nrm(sub(E, S))), R2: rotFromTo(nrm(sub(H0, E0)), nrm(sub(Hreach, E))), miss: len(sub(Hreach, H)) };
+  // one elbow hinge for the upper arm and the forearm (no twist at the elbow). T-pose: arm along +-y, palm down (-z),
+  // the elbow bends the forearm forward, so the hinge is axis x forward.
+  const ax0 = [0, side, 0], hinge0 = nrm(cross(ax0, [1, 0, 0]));
+  const u1 = nrm(sub(E, S)), u2 = nrm(sub(Hreach, E)); let n = cross(u1, u2); n = len(n) > 1e-6 ? nrm(n) : hinge0;
+  const R1 = frameMap(ax0, hinge0, u1, n), R2 = frameMap(ax0, hinge0, u2, n);
+  // forearm roll: turn the palm (T-pose -z) toward the front, rolling gradually from the elbow to the wrist
+  const palm = mv(R2, [0, 0, -1]); let want2 = sub([1, 0, 0], mul(u2, u2[0])); want2 = nrm(want2);
+  const roll = Math.atan2(dot(cross(palm, want2), u2), dot(palm, want2));
+  ik[side] = { S0, E0, H0, S, E, H: Hreach, target: H, R1, R2, u2, roll, n, miss: len(sub(Hreach, H)),
+    bend: Math.acos(Math.max(-1, Math.min(1, dot(u1, u2)))), elbowOut: dot(sub(E, S), [0, side, 0]), elbowDown: -dot(sub(E, S), [0, 0, 1]) };
 }
 // full rider pose for a T-pose point (and normal)
 function poseRider(p, n) {
   const side = p[1] >= 0 ? 1 : -1, ay = Math.abs(p[1]);
   const armW = ss(1.9, 2.9, ay) * ss(10.5, 11.5, p[2]);
   // body: legs, then lean (above the hips), head tilts up to look ahead
-  let q = legPose(p), m = n;
+  let [q, m] = legPose(p, n);
   const wLean = ss(8.2, 9.0, p[2]) * (1 - armW);
   const headW = ss(14.4, 15.0, p[2]) * (1 - armW);
   if (headW > 0) { q = lerp(q, rot(q, [0, 0, NECK_Z], [0, 1, 0], P.headUp), headW); m = lerp(m, rot(m, [0, 0, 0], [0, 1, 0], P.headUp), headW); }
   if (wLean > 0) { q = lerp(q, lean(q), wLean); m = lerp(m, rot(m, [0, 0, 0], [0, 1, 0], P.lean), wLean); }
   if (armW > 0) {
     const A = ik[side];
-    const up = add(A.S, mv(A.R1, sub(p, A.S0))), fo = add(A.E, mv(A.R2, sub(p, A.E0)));
-    const upN = mv(A.R1, n), foN = mv(A.R2, n);
-    const t = ss(EL_Y - 0.5, EL_Y + 0.5, ay);
-    const armP = lerp(up, fo, t), armN = lerp(upN, foN, t);
+    // forearm: rigid, then rolled about its own axis (0 at the elbow, full at the wrist and hand)
+    // upper arm rigid; across the elbow it bends about the hinge by part of the bend (t), the forearm then rolls about
+    // its own axis (0 at the elbow, full at the wrist and hand)
+    const t = ss(EL_Y - 0.5, EL_Y + 0.5, ay), tw = A.roll * ss(EL_Y + 0.3, PALM_Y - 1.2, ay);
+    const up = add(A.S, mv(A.R1, sub(p, A.S0)));
+    const armP = rot(rot(up, A.E, A.n, A.bend * t), A.E, A.u2, tw);
+    const armN = rot(rot(mv(A.R1, n), [0, 0, 0], A.n, A.bend * t), [0, 0, 0], A.u2, tw);
     q = lerp(q, armP, armW); m = lerp(m, armN, armW);
   }
   return [q, nrm(m)];
@@ -170,7 +214,7 @@ for (const q of RP) {
     const den = 1 / (va + vb + vc); return add(a, add(mul(ab, vb * den), mul(ac, vc * den))); };
   const toCm = (v) => (v * DRAGON_HEIGHT_M / DRAGON_NATIVE_H * 100).toFixed(1);
   const MARGIN = 0.004 / (DRAGON_HEIGHT_M / DRAGON_NATIVE_H);   // 4 mm in dragon units
-  const PASSES = +(process.env.HUG_PASSES || 4);
+  const PASSES = +(process.env.HUG_PASSES || 8);
   let worst = Infinity, worstPose = null, nInside = 0;
   for (let pass = 0; pass < PASSES; pass++) {
   const pushes = legs.map(() => null);
@@ -189,11 +233,20 @@ for (const q of RP) {
       if (sd < MARGIN && bt) { const need = MARGIN - sd; if (!pushes[li] || need > pushes[li].need) pushes[li] = { need, n: bt.n }; } if (sd < minS) { minS = sd; global.__worst = { p, f: sub(L.toGl(L.pitchP(p)), [0, 0, 0]), tri: bt.vs[0] }; } if (sd < 0) inside++; }
     if (minS < worst) { worst = minS; worstPose = [yaw, pitch]; } nInside = Math.max(nInside, inside); if (yaw === 0 && pitch === 0) global.__seatGap = seatMin;
   }
-  let moved = 0; if (pass < PASSES - 1) pushes.forEach((ps, i) => { if (!ps) return; const [pi, vi] = legRef[i]; prims[pi].P[vi] = add(prims[pi].P[vi], mul(ps.n, ps.need)); moved++; });
+  // push out smoothly: each push also moves nearby leg vertices (soft falloff, about 15 cm), so the cloth bulges around
+  // the neck instead of single vertices (or one side of a UV seam) poking out as spikes
+  let moved = 0; if (pass < PASSES - 1) {
+    const src = []; pushes.forEach((ps, i) => { if (ps) { const [pi, vi] = legRef[i]; src.push({ p: prims[pi].P[vi], v: mul(ps.n, ps.need * 1.15) }); } });
+    const R2 = (0.7) ** 2;
+    if (src.length) legRef.forEach(([pi, vi]) => { const p0 = prims[pi].P[vi]; let best = null, bm = 0;
+      for (const s0 of src) { const d2 = (p0[0] - s0.p[0]) ** 2 + (p0[1] - s0.p[1]) ** 2 + (p0[2] - s0.p[2]) ** 2; const f = Math.exp(-d2 / R2), m = len(s0.v) * f; if (m > bm) { bm = m; best = mul(s0.v, f); } }
+      if (best && bm > 1e-4) { prims[pi].P[vi] = add(p0, best); moved++; } });
+  }
   console.log(`pass ${pass + 1}: worst ${toCm(worst)} cm, inside ${nInside}, seat contact ${toCm(global.__seatGap)} cm, vertices pushed out ${moved}`);
   if (!moved) break;
   }
   console.log(`seat ${P.seat.map((v) => v.toFixed(2)).join(",")} IK miss L ${ik[1].miss.toFixed(2)} R ${ik[-1].miss.toFixed(2)}`);
+  console.log(`pose: torso lean ${(P.lean / DEG).toFixed(1)} deg, knee bend L ${(LEG[1].bend / DEG).toFixed(0)} R ${(LEG[-1].bend / DEG).toFixed(0)} deg, elbow bend L ${(ik[1].bend / DEG).toFixed(0)} R ${(ik[-1].bend / DEG).toFixed(0)} deg, elbow out ${ik[1].elbowOut.toFixed(2)}/${ik[-1].elbowOut.toFixed(2)} down ${ik[1].elbowDown.toFixed(2)}/${ik[-1].elbowDown.toFixed(2)}, forearm roll ${(ik[1].roll / DEG).toFixed(0)}/${(ik[-1].roll / DEG).toFixed(0)} deg`);
   console.log(`legs vs dragon: ${legs.length} leg verts, ${tris.length} nearby triangles; worst signed gap ${toCm(worst)} cm at head yaw/pitch ${worstPose}; max verts inside ${nInside}; seat contact gap ${toCm(global.__seatGap)} cm`);
   global.__legGap = worst * DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
   if (process.env.CHECK_DEBUG) { const w = global.__worst; console.log("worst leg vertex native", w.p.map((v) => v.toFixed(2)).join(","), "flight", w.f.map((v) => v.toFixed(2)).join(","), "nearest dragon vertex native", w.tri.map((v) => v.toFixed(2)).join(","), "seatF", seatF.map((v) => v.toFixed(2)).join(","));

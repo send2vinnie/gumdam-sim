@@ -68,11 +68,14 @@ sets the defaults the first time the game runs, and still needs *Save & reload*.
 Pick one on the start screen (**Character**), remembered between visits.
 * **Gundam RX-78-02**, true scale (18.0 m head height).
 * **Dragon with rider**: the dragon is shown at a **rideable 4 m** rather than its official 1.7 m. A 1.75 m rider sits astride
-  its lower neck, resting on it, with legs wide open around it (checked at build time: the seat touches the neck within 0.5 cm
-  and no part of the legs passes through it, even during head turns), leaning
-  forward with both hands on its horns; the rider is skinned to the dragon's joints, so the hands stay on
-  the horns when the head turns. To use another dragon size, change `DRAGON_HEIGHT_M` in `js/app.js` and rebuild the model with
-  `node tools/build_dragon_rider.js <dragon folder> <trainer folder> models/dragon.glb <height>` so the rider stays 1.75 m.
+  its lower neck like riding a horse: thighs out around the neck, knees bent about 95° so the shins hang down along its sides
+  with the feet near its shoulders (checked at build time: the seat touches the neck within 0.5 cm and no part of the legs
+  passes through it, even during head turns; where the legs would press in, the cloth bulges smoothly around the neck). The
+  rider leans forward with both hands on the horns, gripping them from behind: elbows bent about 30° and pointing out, the
+  forearms rolled so the palms face forward, and no twist at the elbows. The rider is skinned to the dragon's joints, so the
+  hands stay on the horns when the head turns. To use another dragon size, change `DRAGON_HEIGHT_M` in `js/app.js` and rebuild
+  the model with `node tools/build_dragon_rider.js <dragon folder> <trainer folder> models/dragon.glb <height>` followed by
+  `node tools/build_dragon_legs.js models/dragon.glb`, so the rider stays 1.75 m.
 
 In flight both characters bank into turns, lean with speed and pitch back when climbing / forward when diving, and turn their
 heads into the turn (up to 30°). The dragon also beats its wings (slowly when cruising, faster and deeper on boost, folded
