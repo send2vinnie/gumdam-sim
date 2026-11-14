@@ -276,6 +276,7 @@ void main() {
             maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
             cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
             showCreditsOnScreen: true,
+            enablePick: true,   // keep a CPU copy of the geometry for the CPU height/ray queries (else each one reads it back from the GPU)
             imageBasedLighting: skyLight(),
             dynamicScreenSpaceError: true,
             preferLeaves: false
@@ -385,6 +386,7 @@ void main() {
         maximumCacheOverflowBytes: LOW_GFX ? 32 * 1024 * 1024 : undefined,   // Low: half-size textures, so half the budget gives the same detail
         cullRequestsWhileMoving: true, cullRequestsWhileMovingMultiplier: LOW_GFX ? 30 : 60,   // skip tile requests while the camera moves fast
         dynamicScreenSpaceError: true,
+        enablePick: true,   // keep a CPU copy of the geometry for the CPU height/ray queries (else each one reads it back from the GPU)
         imageBasedLighting: skyLight(),
         shadows: QUALITY.shadows ? C.ShadowMode.ENABLED : C.ShadowMode.DISABLED
       });
@@ -466,18 +468,244 @@ void main() {
     for (const p of hidden) p.show = false;
     try { return fn(); } finally { for (const p of hidden) p.show = true; }
   }
-  const scratchCarto = new C.Cartographic();
-  function groundHeightAt(lon, lat, exclude) {
-    // height of the rendered surface (roof, street or terrain) below this point, metres above ellipsoid
-    if (!scene.sampleHeightSupported) return undefined;
-    scratchCarto.longitude = lon * DEG; scratchCarto.latitude = lat * DEG; scratchCarto.height = 0;
-    if (demoMode) return 0;
+  // ---- CPU queries against the loaded city tiles (no GPU read-back) ---------------------------------------
+  // A GPU pick (scene.sampleHeight / pickFromRay) reads pixels back, so it makes the CPU wait for the GPU: measured on an
+  // Intel laptop GPU, frames take 6-8 ms without a pick and 48-104 ms with one. The city's 3D tiles keep their geometry on
+  // the CPU for picking, so heights and rays are intersected there instead (about 1 ms). That only covers tiles being
+  // drawn, so the GPU pick is still used (at most in pick frames) for spots outside the view, near destroyed buildings
+  // (CPU picking still sees hidden ones) and where there are no tiles (the Nangang start screen).
+  // On WebGL 2 Cesium keeps only the index data of tiles on the CPU; each CPU pick reads all vertex positions of the
+  // candidate tiles back from the GPU (getBufferSubData, another stall). Tile geometry never changes, so the first read
+  // of each static buffer is kept (with the buffer object, freed with it) and later picks copy from memory.
+  if (C.Buffer && C.Buffer.prototype.getBufferData && C.BufferUsage) {
+    const readBack = C.Buffer.prototype.getBufferData, kept = new WeakMap();
+    C.Buffer.prototype.getBufferData = function (view, srcOffset, dstOffset, length) {
+      if (srcOffset || dstOffset || length || this._usage !== C.BufferUsage.STATIC_DRAW || !view || !view.buffer) return readBack.apply(this, arguments);
+      let bytes = kept.get(this);
+      if (!bytes || bytes.byteLength < view.byteLength) { bytes = new Uint8Array(view.byteLength); readBack.call(this, bytes); kept.set(this, bytes); }
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(bytes.subarray(0, view.byteLength));
+    };
+  }
+  const destroyedSpots = [];   // where buildings were destroyed (cleared by Rebuild city)
+  const scratchCpuCg = new C.Cartographic(), scratchCpuPt = new C.Cartesian3(), scratchCpuHit = new C.Cartesian3(), scratchCpuBs = new C.BoundingSphere();
+  const scratchCpuA = new C.Cartesian3(), scratchCpuB = new C.Cartesian3();
+  function cityTilesetsAt(pt) {
+    const out = [];
+    for (const ts of tilesets) { try { if (ts.show && ts.root && C.Cartesian3.distance(ts.boundingSphere.center, pt) < ts.boundingSphere.radius) out.push(ts); } catch (e) { /* not ready */ } }
+    return out;
+  }
+  function inView(pt, r) {
+    const fs = scene.frameState; if (!fs || !fs.cullingVolume) return false;
+    scratchCpuBs.center = pt; scratchCpuBs.radius = r; return fs.cullingVolume.computeVisibility(scratchCpuBs) !== C.Intersect.OUTSIDE;
+  }
+  function nearDestroyed(a, b, r) {   // any destroyed spot within r of the segment a-b (or of point a)
+    for (const p of destroyedSpots) {
+      if (!b) { if (C.Cartesian3.distanceSquared(p, a) < r * r) return true; continue; }
+      const ab = C.Cartesian3.subtract(b, a, scratchCpuA), ap = C.Cartesian3.subtract(p, a, scratchCpuB);
+      const t = Math.max(0, Math.min(1, C.Cartesian3.dot(ap, ab) / Math.max(1e-6, C.Cartesian3.magnitudeSquared(ab))));
+      C.Cartesian3.multiplyByScalar(ab, t, ab); if (C.Cartesian3.distanceSquared(ap, ab) < r * r) return true;
+    }
+    return false;
+  }
+  const DESTROYED_R = () => (worldMode === "google" ? 40 : 90);
+  // closest hit of a ray with the drawn tiles of a tileset within maxDist. Like Cesium3DTileset.pick, but only tiles whose
+  // bounds meet this stretch of the ray are tested (nearest first, stopping once no closer hit is possible), so a short
+  // camera ray or a vertical height query tests a few tiles instead of every tile along the infinite ray.
+  const scratchIv = new C.Interval();
+  // ---- triangle grids: each tile's triangles in world space, bucketed in a 3D grid, built once per tile -------------
+  // Cesium's content.pick transforms every vertex of the tile with a matrix and tests every triangle on each query (tens
+  // of milliseconds for the detailed Medium/High tiles). A tile's geometry never changes, so it is transformed once into
+  // a grid of cells; a ray then walks only the cells it passes through and tests the few triangles in them.
+  const triGrids = new WeakMap();   // tile content -> grid, or false (not indexable: Cesium's pick is used)
+  let gridBuildsThisFrame = 0;
+  function buildTriGrid(content) {
+    const model = content && content._model; if (!model || !model._ready || !model.sceneGraph) return null;
+    const sg = model.sceneGraph, P = [], F = [];   // P: world positions, 9 numbers per triangle; F: its building (feature id) or -1
+    const M = new C.Matrix4(), v = new C.Cartesian3();
+    for (const rn of sg._runtimeNodes) {
+      if (rn.node && rn.node.instances) return false;
+      C.Matrix4.multiplyTransformation(sg.computedModelMatrix, rn.computedTransform, M);
+      for (const rp of rn.runtimePrimitives) {
+        const prim = rp.primitive; if (!prim || !prim.indices || (prim.primitiveType !== undefined && prim.primitiveType !== C.PrimitiveType.TRIANGLES)) continue;
+        const pa = prim.attributes.find((a) => a.semantic === "POSITION"); if (!pa) continue;
+        let idx = prim.indices.typedArray;
+        if (!idx) { const n = prim.indices.count, dt = prim.indices.indexDatatype;
+          idx = dt === C.IndexDatatype.UNSIGNED_BYTE ? new Uint8Array(n) : dt === C.IndexDatatype.UNSIGNED_SHORT ? new Uint16Array(n) : new Uint32Array(n);
+          if (!prim.indices.buffer) continue; prim.indices.buffer.getBufferData(idx); }
+        const q = pa.quantization; if (q && q.octEncoded) return false;
+        const dt = q ? q.componentDatatype : pa.componentDatatype, bytes = C.ComponentDatatype.getSizeInBytes(dt);
+        let verts = pa.typedArray, stride = 3, off = 0;
+        if (!verts) {
+          if (!pa.buffer) continue;
+          const inter = pa.byteStride !== undefined && pa.byteStride !== 3 * bytes;
+          stride = inter ? pa.byteStride / bytes : 3; off = inter ? (pa.byteOffset || 0) / bytes : 0;
+          verts = C.ComponentDatatype.createTypedArray(dt, pa.count * stride);
+          pa.buffer.getBufferData(verts, inter ? 0 : (pa.byteOffset || 0), 0, pa.count * stride);
+        }
+        const norm = q && pa.normalized && C.AttributeCompression && C.AttributeCompression.dequantize;
+        if (norm) { if (stride !== 3) return false; verts = C.AttributeCompression.dequantize(verts, dt, C.AttributeType.VEC3, pa.count); }
+        const st = q && !norm ? q.quantizedVolumeStepSize : null, of = q && !norm ? q.quantizedVolumeOffset : null;
+        // feature (building) id of each vertex, so triangles of destroyed (hidden) buildings can be skipped
+        let fid = null; const fa = prim.attributes.find((a) => a.semantic === "_FEATURE_ID" && (a.setIndex === 0 || a.setIndex === undefined));
+        if (fa && (fa.typedArray || fa.buffer)) { fid = fa.typedArray;
+          if (!fid) { const fdt = fa.componentDatatype, fb = C.ComponentDatatype.getSizeInBytes(fdt), fst = fa.byteStride && fa.byteStride !== fb ? fa.byteStride / fb : 1;
+            const raw = C.ComponentDatatype.createTypedArray(fdt, fa.count * fst); fa.buffer.getBufferData(raw, fst === 1 ? (fa.byteOffset || 0) : 0, 0, fa.count * fst);
+            fid = new Float32Array(fa.count); const fo = fst === 1 ? 0 : (fa.byteOffset || 0) / fb; for (let i = 0; i < fa.count; i++) fid[i] = raw[fo + i * fst]; } }
+        const W = new Float64Array(pa.count * 3);
+        for (let i = 0; i < pa.count; i++) { const k = off + i * stride; v.x = verts[k]; v.y = verts[k + 1]; v.z = verts[k + 2];
+          if (st) { v.x = v.x * st.x + of.x; v.y = v.y * st.y + of.y; v.z = v.z * st.z + of.z; }
+          C.Matrix4.multiplyByPoint(M, v, v); W[i * 3] = v.x; W[i * 3 + 1] = v.y; W[i * 3 + 2] = v.z; }
+        for (let i = 0; i + 2 < idx.length; i += 3) { for (const j of [idx[i], idx[i + 1], idx[i + 2]]) P.push(W[j * 3], W[j * 3 + 1], W[j * 3 + 2]); F.push(fid ? Math.round(fid[idx[i]]) : -1); }
+      }
+    }
+    const nT = P.length / 9; if (!nT) return false;
+    // relative to the first vertex (precision), axis-aligned box and cells of about 6 m (at most 48 per axis)
+    const o = [P[0], P[1], P[2]], T = new Float32Array(P.length); const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < P.length; i++) { const a = i % 3; T[i] = P[i] - o[a]; if (T[i] < mn[a]) mn[a] = T[i]; if (T[i] > mx[a]) mx[a] = T[i]; }
+    const n = [0, 1, 2].map((a) => Math.max(1, Math.min(48, Math.ceil((mx[a] - mn[a]) / 6)))), cs = [0, 1, 2].map((a) => Math.max(1e-3, (mx[a] - mn[a]) / n[a]));
+    const cells = new Map();
+    for (let t = 0; t < nT; t++) { const b = t * 9; const lo = [0, 1, 2].map((a) => Math.min(T[b + a], T[b + 3 + a], T[b + 6 + a])), hi = [0, 1, 2].map((a) => Math.max(T[b + a], T[b + 3 + a], T[b + 6 + a]));
+      const c0 = [0, 1, 2].map((a) => Math.max(0, Math.min(n[a] - 1, Math.floor((lo[a] - mn[a]) / cs[a])))), c1 = [0, 1, 2].map((a) => Math.max(0, Math.min(n[a] - 1, Math.floor((hi[a] - mn[a]) / cs[a]))));
+      for (let x = c0[0]; x <= c1[0]; x++) for (let y = c0[1]; y <= c1[1]; y++) for (let z = c0[2]; z <= c1[2]; z++) { const key = (x * n[1] + y) * n[2] + z; let l = cells.get(key); if (!l) cells.set(key, (l = [])); l.push(t); } }
+    return { o, T, F: Int32Array.from(F), mn, mx, n, cs, cells, content };
+  }
+  // closest hit distance along a (unit) ray within maxDist, two-sided triangles; undefined if none
+  function gridRay(g, ray, maxDist) {
+    const O = [ray.origin.x - g.o[0], ray.origin.y - g.o[1], ray.origin.z - g.o[2]], D = [ray.direction.x, ray.direction.y, ray.direction.z];
+    let t0 = 0, t1 = maxDist;
+    for (let a = 0; a < 3; a++) { if (Math.abs(D[a]) < 1e-12) { if (O[a] < g.mn[a] || O[a] > g.mx[a]) return undefined; continue; }
+      let ta = (g.mn[a] - O[a]) / D[a], tb = (g.mx[a] - O[a]) / D[a]; if (ta > tb) { const x = ta; ta = tb; tb = x; } t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) return undefined; }
+    const cell = [0, 1, 2].map((a) => Math.max(0, Math.min(g.n[a] - 1, Math.floor((O[a] + D[a] * t0 - g.mn[a]) / g.cs[a]))));
+    const step = D.map((d) => (d > 0 ? 1 : d < 0 ? -1 : 0));
+    const tMax = [0, 1, 2].map((a) => (step[a] === 0 ? Infinity : (g.mn[a] + (cell[a] + (step[a] > 0 ? 1 : 0)) * g.cs[a] - O[a]) / D[a]));
+    const tDelta = [0, 1, 2].map((a) => (step[a] === 0 ? Infinity : g.cs[a] / Math.abs(D[a])));
+    let best = Infinity; const T = g.T;
+    for (let guard = 0; guard < 400; guard++) {
+      const l = g.cells.get((cell[0] * g.n[1] + cell[1]) * g.n[2] + cell[2]);
+      if (l) for (const t of l) { const b = t * 9;   // Moller-Trumbore, two-sided
+        const fi = g.F[t]; if (fi >= 0 && g.hidden && g.hidden.has(fi)) continue;   // a destroyed building
+        const e1x = T[b + 3] - T[b], e1y = T[b + 4] - T[b + 1], e1z = T[b + 5] - T[b + 2], e2x = T[b + 6] - T[b], e2y = T[b + 7] - T[b + 1], e2z = T[b + 8] - T[b + 2];
+        const px = D[1] * e2z - D[2] * e2y, py = D[2] * e2x - D[0] * e2z, pz = D[0] * e2y - D[1] * e2x, det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-12) continue; const inv = 1 / det;
+        const sx = O[0] - T[b], sy = O[1] - T[b + 1], sz = O[2] - T[b + 2], u = (sx * px + sy * py + sz * pz) * inv; if (u < 0 || u > 1) continue;
+        const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x, w = (D[0] * qx + D[1] * qy + D[2] * qz) * inv; if (w < 0 || u + w > 1) continue;
+        const tt = (e2x * qx + e2y * qy + e2z * qz) * inv; if (tt >= 0 && tt <= maxDist && tt < best) best = tt; }
+      const a = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+      if (best <= tMax[a]) break;                  // nothing in later cells can be closer
+      if (tMax[a] > t1) break;
+      cell[a] += step[a]; if (cell[a] < 0 || cell[a] >= g.n[a]) break; tMax[a] += tDelta[a];
+    }
+    return best < Infinity ? best : undefined;
+  }
+  function tileRayHit(content, ray, maxDist) {
+    let g = triGrids.get(content);
+    if (g === undefined && gridBuildsThisFrame < 1) { gridBuildsThisFrame++; try { g = buildTriGrid(content); } catch (e) { g = false; } if (g !== null) triGrids.set(content, g); }
+    if (g) { g.hidden = typeof hiddenFeatures !== "undefined" && content.url !== undefined ? hiddenFeatures.get(content.url) : null; const d = gridRay(g, ray, maxDist); return d === undefined ? null : d; }
+    const q = content.pick(ray, scene.frameState, scratchCpuHit);   // not indexed (yet): Cesium's own pick
+    return q ? C.Cartesian3.distance(ray.origin, q) : null;
+  }
+  // CPU picks only see the tiles drawn now. Before trusting one, the tile tree is walked along the ray: every tile on it
+  // must be drawn or have a drawn ancestor, else the answer is "unknown" (thrown; callers fall back to the GPU pick).
+  const UNKNOWN = new Error("not known on the CPU"), selSets = new WeakMap(), scratchIv2 = new C.Interval();
+  function drawnSet(ts) { const fn = scene.frameState.frameNumber; let e = selSets.get(ts); if (!e || e.fn !== fn) { e = { fn, set: new Set(ts._selectedTiles) }; selSets.set(ts, e); } return e.set; }
+  // does the ray (within maxDist) pass through a tile's bounding volume? Its oriented box when it has one (tight),
+  // else its bounding sphere
+  const scratchAx = new C.Cartesian3(), scratchRel = new C.Cartesian3();
+  function rayHitsVolume(ray, bv, maxDist) {
+    const obb = bv && (bv._orientedBoundingBox || bv.orientedBoundingBox);
+    if (!obb) { const iv = C.IntersectionTests.raySphere(ray, bv.boundingSphere, scratchIv2); return !!iv && iv.stop >= 0 && iv.start <= maxDist; }
+    C.Cartesian3.subtract(ray.origin, obb.center, scratchRel); let t0 = 0, t1 = maxDist;
+    for (let i = 0; i < 3; i++) {
+      C.Matrix3.getColumn(obb.halfAxes, i, scratchAx); const e = C.Cartesian3.magnitude(scratchAx); if (e < 1e-9) continue;
+      const o = C.Cartesian3.dot(scratchRel, scratchAx) / e, d = C.Cartesian3.dot(ray.direction, scratchAx) / e;
+      if (Math.abs(d) < 1e-12) { if (Math.abs(o) > e) return false; continue; }
+      let ta = (-e - o) / d, tb = (e - o) / d; if (ta > tb) { const x = ta; ta = tb; tb = x; }
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) return false;
+    }
+    return true;
+  }
+  function rayCovered(ts, ray, maxDist) {
+    const drawn = drawnSet(ts), stack = [ts.root]; let visits = 0;
+    while (stack.length) {
+      const t = stack.pop(); if (!t || ++visits > 800) return false;
+      if (!rayHitsVolume(ray, t.boundingVolume, maxDist)) continue;
+      if (drawn.has(t)) continue;
+      if (t.children && t.children.length) { for (const k of t.children) stack.push(k); continue; }
+      const renderable = t.hasRenderableContent !== undefined ? t.hasRenderableContent : !t.hasEmptyContent && !t.hasTilesetContent;
+      // a tile with buildings whose content lies on the ray but is not drawn now
+      if (renderable && rayHitsVolume(ray, t.contentBoundingVolume || t.boundingVolume, maxDist)) return false;
+    }
+    return true;
+  }
+  function tilesetRay(ts, ray, maxDist) {
+    const tiles = ts._selectedTiles; if (!tiles) return null;
+    if (!rayCovered(ts, ray, maxDist)) throw UNKNOWN;
+    const cand = [];
+    for (const t of tiles) { if (!t.content) continue; const iv = C.IntersectionTests.raySphere(ray, t.contentBoundingVolume.boundingSphere, scratchIv);
+      if (iv && iv.stop >= 0 && iv.start <= maxDist) cand.push([Math.max(0, iv.start), t]); }
+    cand.sort((a, b) => a[0] - b[0]);
+    let best = null, bd = maxDist;
+    for (const [start, t] of cand) { if (start > bd) break;
+      const d = tileRayHit(t.content, ray, bd); if (d === null || d > bd) continue;
+      bd = d; best = C.Ray.getPoint(ray, d, new C.Cartesian3()); }
+    return best ? { position: best, distance: bd } : null;
+  }
+  const scratchDown = new C.Cartesian3(), scratchTop = new C.Cartesian3(), scratchVRay = new C.Ray();
+  // top surface of the city tiles at a point: a height, undefined (no tile surface there) or null (unknown on the CPU)
+  function cpuHeightAt(lon, lat, street) {
+    if (!tilesets.length || demoMode) return null;
+    const pt = C.Cartesian3.fromDegrees(lon, lat, (street || 0) + 40, undefined, scratchCpuPt);
+    const tss = cityTilesetsAt(pt); if (!tss.length) return null;
+    if (nearDestroyed(pt, null, DESTROYED_R()) || !inView(pt, 60)) return null;
+    // a vertical ray from 700 m above the street (above every roof in the play areas) down to below it
+    C.Cartesian3.fromDegrees(lon, lat, (street || 0) + 700, undefined, scratchTop);
+    C.Cartesian3.negate(C.Cartesian3.normalize(scratchTop, scratchDown), scratchDown);
+    scratchVRay.origin = scratchTop; scratchVRay.direction = scratchDown;
     let h;
-    try { h = withOwnFxHidden(() => scene.sampleHeight(scratchCarto, exclude, 1.5)); } catch (e) { h = undefined; }
+    for (const ts of tss) { let r; try { r = tilesetRay(ts, scratchVRay, 760); } catch (e) { return null; }
+      if (r) { const hh = 700 + (street || 0) - r.distance; if (h === undefined || hh > h) h = hh; } }
+    if (h === undefined && !localWorld) return null;   // Google tiles include the ground: no hit means not known
+    return h;
+  }
+  // first surface (city tiles or ground) along a ray within maxDist: { position, distance }, undefined (nothing) or null
+  // (unknown on the CPU). checkView: the far end must be in view too (camera rays start in view and run toward the camera).
+  function cpuRay(ray, maxDist, checkView) {
+    if (!tilesets.length || demoMode) return null;
+    const end = C.Cartesian3.add(ray.origin, C.Cartesian3.multiplyByScalar(ray.direction, maxDist, scratchCpuA), new C.Cartesian3());
+    if (!cityTilesetsAt(ray.origin).length) return null;
+    if (checkView && (!inView(ray.origin, 1) || !inView(end, 1))) return null;
+    if (nearDestroyed(ray.origin, end, DESTROYED_R())) return null;
+    let best = null, bd = Infinity;
+    for (const ts of tilesets) { if (!ts.show) continue; let r; try { r = tilesetRay(ts, ray, maxDist); } catch (e) { return null; }
+      if (r && r.distance < bd) { bd = r.distance; best = r.position; } }
+    if (scene.globe && scene.globe.show) { let q; try { q = scene.globe.pick(ray, scene, scratchCpuHit); } catch (e) { q = undefined; }
+      if (q) { const d = C.Cartesian3.distance(ray.origin, q); if (d < bd) { bd = d; best = C.Cartesian3.clone(q); } } }
+    return best && bd <= maxDist ? { position: best, distance: bd } : undefined;
+  }
+  const scratchCarto = new C.Cartographic();
+  // recent heights on a 0.5 m grid, kept for half a second: hovering, standing or walking slowly costs nothing
+  const heightCache = new Map();
+  function groundHeightAt(lon, lat, exclude, gpuOk) {
+    // height of the rendered surface (roof, street or terrain) below this point, metres above ellipsoid; undefined when
+    // it can only be found with a GPU pick and gpuOk is false (callers then keep the last value)
+    if (demoMode) return 0;
+    const now = performance.now(), key = Math.round(lat * 222390) + ":" + Math.round(lon * 222390 * Math.cos(lat * DEG));
+    const hit = heightCache.get(key); if (hit && now - hit.t < 500) return hit.h;
+    const h = groundHeightNow(lon, lat, exclude, gpuOk);
+    if (h !== undefined) { heightCache.set(key, { h, t: now }); if (heightCache.size > 256) heightCache.delete(heightCache.keys().next().value); }
+    return h;
+  }
+  function groundHeightNow(lon, lat, exclude, gpuOk) {
+    const street = localWorld ? localWorld.ground.heightAt(lon, lat) : undefined;
+    let h = cpuHeightAt(lon, lat, street);
+    if (h === null) {
+      if (gpuOk === false || !scene.sampleHeightSupported) return undefined;
+      scratchCarto.longitude = lon * DEG; scratchCarto.latitude = lat * DEG; scratchCarto.height = 0;
+      try { h = withOwnFxHidden(() => scene.sampleHeight(scratchCarto, exclude, 1.5)); } catch (e) { h = undefined; }
+    }
     if (localWorld) {
       // the street level is known from the data, so it is the floor: picking the globe can hit a coarse terrain
       // tile's skirt far below the street before the detailed tile has loaded
-      const street = localWorld.ground.heightAt(lon, lat);
       if (h === undefined || !isFinite(h) || h < street - 1) h = street;
     }
     return h;
@@ -729,7 +957,7 @@ void main() {
   const CAM_SIDE = [null, [1, 0], [-1, 0], [0, 1], [0, -1]];   // [right, up] offsets of the side rays' end points
   const scratchDir = new C.Cartesian3(), scratchDirW = new C.Cartesian3(), scratchRay = new C.Ray(), scratchEnu = new C.Matrix4();
   const scratchSide = new C.Cartesian3(), scratchEnd = new C.Cartesian3();
-  function camRay(k, target, heading, pitch, range, spread, exclude) {
+  function camRay(k, target, heading, pitch, range, spread, exclude, gpuOk, gpuOnly) {
     // ray k toward the camera spot (k > 0: toward a point beside it); returns the hit distance along the centre line
     const sh = Math.sin(heading), chd = Math.cos(heading), sp = Math.sin(pitch), cp = Math.cos(pitch);
     C.Cartesian3.fromElements(-sh * cp, -chd * cp, -sp, scratchDir);                       // target -> camera (east-north-up)
@@ -744,17 +972,24 @@ void main() {
     C.Transforms.eastNorthUpToFixedFrame(target, undefined, scratchEnu);
     C.Matrix4.multiplyByPointAsVector(scratchEnu, scratchEnd, scratchDirW); C.Cartesian3.normalize(scratchDirW, scratchDirW);
     scratchRay.origin = target; scratchRay.direction = scratchDirW;
+    const cr = gpuOnly ? null : cpuRay(scratchRay, range + 5, false);
+    if (cr !== null) return cr ? cr.distance * cosToCentre : Infinity;
+    if (!gpuOk) return NaN;   // keep the last result
     let hit; try { hit = withOwnFxHidden(() => scene.pickFromRay(scratchRay, exclude, 0.5)); } catch (e) { hit = undefined; }
     return hit && hit.position ? C.Cartesian3.distance(target, hit.position) * cosToCentre : Infinity;
   }
   function collideRange(key, target, heading, pitch, range, exclude, margin, minRange, dt) {
     const now = performance.now();
     if (camCol.key !== key) { camCol.key = key; camCol.range = null; camCol.t = 0; camCol.allowed = Infinity; camCol.rays.fill(Infinity); camCol.clearT = 0; }
-    if (now - camCol.t > CAM_RAY_MS && scene.pickPositionSupported !== false) {
+    // rays on the CPU about 14 times a second (9 on phones); GPU picks only in pick frames (start screen: 4 times a second)
+    const lobbyCam = key === "lobby";
+    const moved = !camCol.lastTarget || C.Cartesian3.distanceSquared(camCol.lastTarget, target) > 0.25 || Math.abs(camCol.lastH - heading) > 0.01 || Math.abs(camCol.lastP - pitch) > 0.01 || Math.abs(camCol.lastR - range) > 0.5;
+    if ((camCol.t === 0 || now - camCol.t > (lobbyCam ? 250 : moved ? CAM_RAY_MS : 500)) && scene.pickPositionSupported !== false) {
+      camCol.lastTarget = C.Cartesian3.clone(target, camCol.lastTarget); camCol.lastH = heading; camCol.lastP = pitch; camCol.lastR = range;
       const first = camCol.t === 0; camCol.t = now;
       const spread = minRange < 6 ? 0.5 : 1.5;
       // the first time all five, then the centre plus one side ray in turn
-      for (const k of first ? [0, 1, 2, 3, 4] : [0, camCol.next]) camCol.rays[k] = camRay(k, target, heading, pitch, range, spread, exclude);
+      for (const k of first ? [0, 1, 2, 3, 4] : [0, camCol.next]) { const d = camRay(k, target, heading, pitch, range, spread, exclude, first || pickSlot, lobbyCam); if (!isNaN(d)) camCol.rays[k] = d; }
       camCol.next = camCol.next % 4 + 1;
       let allowed = Infinity;
       for (const d of camCol.rays) if (d < range + margin) allowed = Math.min(allowed, Math.max(minRange, d - margin));
@@ -1019,7 +1254,7 @@ void main() {
     fly.h = 40 + (spawn.alt || 150);  // Tokyo geoid ≈ +37 m; corrected to true AGL once tiles report ground
     fly.needsAglFix = spawn.alt || 150;
     fly.ground = undefined;
-    fly.walking = false; fly.stumbleT = 0; fly.walkBlend = 0; fly.gait = 0; fly.gaitRun = 0; fly.walkPhase = 0; fly.bob = 0; fly.dragonLegs = null; fly.headTilt = 0;
+    fly.walking = false; fly.stumbleT = 0; fly.walkBlend = 0; fly.block = null; fly.gait = 0; fly.gaitRun = 0; fly.walkPhase = 0; fly.bob = 0; fly.dragonLegs = null; fly.headTilt = 0;
   }
 
   function updateFlight(dt) {
@@ -1091,8 +1326,9 @@ void main() {
     const excl = [fly.model, fly.pendingModel, fly.rider].filter(Boolean);
 
     let tp = PROF ? performance.now() : 0;
-    // ground under us (sampled every frame; cheap enough at 1.5 m footprint)
-    const g = groundHeightAt(fly.lon, fly.lat, excl);
+    // ground under us: in pick frames (about 10-14 times a second; on the CPU when the spot is in view, else a GPU pick),
+    // reused in between
+    const g = pickSlot || fly.ground === undefined ? groundHeightAt(fly.lon, fly.lat, excl, true) : undefined;
     if (g !== undefined && isFinite(g)) {
       fly.ground = g;
       if (fly.needsAglFix) { fly.h = g + fly.needsAglFix; fly.needsAglFix = 0; }
@@ -1100,23 +1336,30 @@ void main() {
 
     // collision with buildings ahead: probe along horizontal velocity
     const hs = Math.hypot(ve, vn);
-    if (hs > 0.5 && fly.ground !== undefined && (fly.frame++ % 2 === 0 || hs > 40 || fly.walking)) {
-      // on foot: probe just ahead, and anything taller than a step blocks (the dragon steps up less than the Gundam)
-      const dist = fly.walking ? WK.probe + hs * 0.3 : 6 + hs * 0.18, wide = fly.walking ? WK.probeSide : 3.5, stepUp = fly.walking ? WK.step : 3.0;
-      const ue = ve / hs, un = vn / hs;
-      for (const side of [0, -1, 1]) {
-        const pe = ue * dist + (-un) * side * wide, pn = un * dist + ue * side * wide;
-        const p = offsetLL(fly.lat, fly.lon, pe, pn);
-        const ph = groundHeightAt(p.lon, p.lat, excl);
-        if (ph !== undefined && ph > fly.h + stepUp) { // a wall taller than a step: blocked
-          const into = ve * ue + vn * un;
-          if (into > 0) { ve -= into * ue; vn -= into * un; }
-          if (hs > 25) { fly.impactT = 0.7; }
-          // remove forward speed so we don't grind into the wall
-          fly.vf *= 0.4; fly.vs *= 0.6;
-          break;
+    if (pickSlot && fly.ground !== undefined) {
+      fly.block = null;
+      if (hs > 0.5) {
+        // on foot: probe just ahead, and anything taller than a step blocks (the dragon steps up less than the Gundam).
+        // The probe reaches further than the distance covered until the next pick frame.
+        const dist = fly.walking ? WK.probe + hs * 0.3 : 6 + hs * 0.18, wide = fly.walking ? WK.probeSide : 3.5, stepUp = fly.walking ? WK.step : 3.0;
+        const ue = ve / hs, un = vn / hs;
+        for (const side of [0, -1, 1]) {
+          const pe = ue * dist + (-un) * side * wide, pn = un * dist + ue * side * wide;
+          const p = offsetLL(fly.lat, fly.lon, pe, pn);
+          const ph = groundHeightAt(p.lon, p.lat, excl);
+          if (ph !== undefined && ph > fly.h + stepUp) { // a wall taller than a step: blocked
+            fly.block = { ue, un };
+            if (hs > 25) { fly.impactT = 0.7; }
+            // remove forward speed so we don't grind into the wall
+            fly.vf *= 0.4; fly.vs *= 0.6;
+            break;
+          }
         }
       }
+    }
+    if (fly.block) {   // until the next probe: no motion into the wall that was found
+      const into = ve * fly.block.ue + vn * fly.block.un;
+      if (into > 0) { ve -= into * fly.block.ue; vn -= into * fly.block.un; }
     }
     if (PROF) tp = PROF.add("flight:ground+walls", tp);
     const np = offsetLL(fly.lat, fly.lon, ve * dt, vn * dt);
@@ -1332,6 +1575,9 @@ void main() {
   }
   function destroyAt(hit) {
     const obj = hit.object, pos = hit.position;
+    // PLATEAU buildings are skipped by feature id in the CPU queries; elsewhere (Google holes, OSM) queries near the spot
+    // use the GPU pick, which sees what is actually drawn
+    if (!(obj instanceof C.Cesium3DTileFeature)) { destroyedSpots.push(C.Cartesian3.clone(pos)); if (destroyedSpots.length > 200) destroyedSpots.shift(); }
     if (obj instanceof C.Cesium3DTileFeature) {             // PLATEAU building: hide it (and keep it hidden when its tile reloads)
       const url = obj.content && obj.content.url; const id = obj.featureId;
       setTimeout(() => { try { obj.show = false; } catch (e) { /* tile unloaded */ } }, 350);
@@ -1362,18 +1608,17 @@ void main() {
       try { ts.root && (function walk(t) { if (t.content && t.content.featuresLength) for (let i = 0; i < t.content.featuresLength; i++) t.content.getFeature(i).show = true; (t.children || []).forEach(walk); })(ts.root); } catch (e) { /* ignore */ } }
     hiddenFeatures.clear();
     if (localWorld && localWorld.osmPrimitive) for (const id of hiddenOsm) { try { localWorld.osmPrimitive.getGeometryInstanceAttributes(id).show = C.ShowGeometryInstanceAttribute.toValue(true); } catch (e) { /* ignore */ } }
-    hiddenOsm.clear(); clipCount = 0;
+    hiddenOsm.clear(); clipCount = 0; destroyedSpots.length = 0;
   }
   function requestFire() {
     if (state.mode !== "fly" || !fly.model || fireCooldown > 0) return;
     const W = WEAPONS[fly.character || "gundam"]; fireCooldown = W.cooldown;
     // aim: through the crosshair (screen centre)
     const cv = scene.canvas, ray = camera.getPickRay(new C.Cartesian2(cv.clientWidth / 2, cv.clientHeight / 2));
-    // ignore the character, its own shots and all effects (smoke would otherwise stop the ray)
-    // first real hit along the ray: skip our own effects (smoke billboards, glow points, beams), which are picked per billboard
-    const ours = new Set([beamLines, glowPoints].concat(effects.map((e) => e.sys && e.sys._billboardCollection), shots.map((s) => s.trail && s.trail._billboardCollection)).filter(Boolean));
-    let hit;
-    try { hit = scene.drillPickFromRay(ray, 6, [fly.model, fly.pendingModel].filter(Boolean), 1.0).find((r) => !(r.object && (ours.has(r.object.collection) || ours.has(r.object.primitive)))); } catch (e) { hit = undefined; }
+    // first real hit along the ray, with our own shots, smoke and flashes hidden for the pick (one pick)
+    let hit = cpuRay(ray, W.range + 200, true);
+    if (hit === null) { try { hit = withOwnFxHidden(() => scene.pickFromRay(ray, [fly.model, fly.pendingModel, fly.rider].filter(Boolean), 1.0)); } catch (e) { hit = undefined; } }
+    else if (hit) hit = { position: hit.position, cpu: true };
     let target = hit && hit.position && C.Cartesian3.distance(ray.origin, hit.position) < W.range + 200 ? hit.position : C.Cartesian3.add(ray.origin, C.Cartesian3.multiplyByScalar(ray.direction, W.range, new C.Cartesian3()), new C.Cartesian3());
     if (!(hit && hit.position && target === hit.position)) hit = null;
     // aim pitch (world) for the animation: angle of the line of fire above the horizon
@@ -1407,20 +1652,30 @@ void main() {
     }
     shots.push(s);
   }
+  function identifyHit(pos, dir) {
+    const from = C.Cartesian3.subtract(pos, C.Cartesian3.multiplyByScalar(dir, 4, new C.Cartesian3()), new C.Cartesian3());
+    let h; try { h = withOwnFxHidden(() => scene.pickFromRay(new C.Ray(from, dir), [fly.model, fly.pendingModel, fly.rider].filter(Boolean), 0.5)); } catch (e) { h = undefined; }
+    return h && h.position && C.Cartesian3.distance(h.position, pos) < 8 ? h : null;
+  }
   function removeShot(s) { if (s.line) beamLines.remove(s.line); if (s.point) glowPoints.remove(s.point); if (s.trail) scene.primitives.remove(s.trail); }
   function updateWeapons(dt) {
     fireCooldown = Math.max(0, fireCooldown - dt);
     if (fly.fireT !== undefined) { fly.fireT += dt; if (fly.character === "dragon" && !fly.fireDone && fly.fireT >= 0.24) launch(); }
     for (let i = shots.length - 1; i >= 0; i--) {
       const s = shots[i]; const step = Math.min(s.speed * dt, s.dist - s.travelled);
-      // impact check along this frame's path segment (never skipped): the aim ray at firing time can miss what the
-      // projectile actually crosses (the fireball leaves the mouth, not the camera; tiles may load after firing)
-      let impact = null;
-      if (step > 0) {
-        const ray = new C.Ray(s.pos, s.dir);
+      // impact check along the shot's own path (never skipped): the aim ray at firing time can miss what the projectile
+      // actually crosses (the fireball leaves the mouth, not the camera; tiles may load after firing). A shot flies
+      // straight, so one ray from where it is finds the first surface on all of its remaining path; it is cast in each
+      // pick frame (and on the shot's first frame), and between them the shot flies toward that hit.
+      const ray = new C.Ray(s.pos, s.dir);
+      const cr = cpuRay(ray, Math.max(1, s.dist - s.travelled) + 1, true);
+      if (cr !== null) { s.aheadAt = cr ? s.travelled + cr.distance : Infinity; s.aheadHit = cr ? { position: cr.position, cpu: true } : null; }
+      else if (s.aheadAt === undefined || pickSlot) {
         let h; try { h = withOwnFxHidden(() => scene.pickFromRay(ray, [fly.model, fly.pendingModel, fly.rider].filter(Boolean), 0.5)); } catch (e) { h = undefined; }
-        if (h && h.position) { const d = C.Cartesian3.distance(s.pos, h.position); if (d <= step + 0.5) impact = { hit: h, d, kind: "segment" }; }
+        s.aheadAt = h && h.position ? s.travelled + C.Cartesian3.distance(s.pos, h.position) : Infinity; s.aheadHit = h;
       }
+      let impact = null;
+      if (step > 0 && s.aheadAt <= s.travelled + step + 0.5) impact = { hit: s.aheadHit, d: Math.max(0, s.aheadAt - s.travelled), kind: "segment" };
       s.travelled += impact ? impact.d : step;
       C.Cartesian3.add(s.pos, C.Cartesian3.multiplyByScalar(s.dir, impact ? impact.d : step, new C.Cartesian3()), s.pos);
       if (!impact && localWorld) {   // below the street surface: hit the ground
@@ -1432,8 +1687,9 @@ void main() {
       if (s.trail) s.trail.modelMatrix = C.Transforms.eastNorthUpToFixedFrame(s.pos);
       if (impact || s.travelled >= s.dist - 1e-3) {
         removeShot(s); shots.splice(i, 1);
-        const hit = impact ? impact.hit : s.hit, kind = impact ? impact.kind : s.hit ? "aimed" : "air";
+        let hit = impact ? impact.hit : s.hit; const kind = impact ? impact.kind : s.hit ? "aimed" : "air";
         explode(s.pos, s.dragon && kind !== "air");
+        if (hit && hit.cpu) hit = identifyHit(s.pos, s.dir);   // found on the CPU: one GPU pick to know which building it is
         if (hit) destroyAt(hit);
         shotLog.push({ kind, dragon: s.dragon, from: s.from, dir: C.Cartesian3.clone(s.dir), travelled: s.travelled }); if (shotLog.length > 200) shotLog.shift();
       }
@@ -1575,6 +1831,12 @@ void main() {
 
   // ---- main loop ------------------------------------------------------------
   const state = { mode: "lobby" };
+  // GPU picks (ground height, wall probes, camera collision, shots) read pixels back, so the first pick in a frame makes the
+  // CPU wait until the GPU has finished drawing: any frame that picks loses the CPU/GPU overlap (measured on an Intel
+  // laptop GPU: 22-47 ms for the first pick of a frame, 3-6 ms for each further one). So all picks happen together in
+  // "pick frames", at most every PICK_MS, and the frames in between pick nothing and reuse the last results.
+  const PICK_MS = isTouch || LOW_GFX ? 100 : 70;
+  let pickSlot = true, lastPickT = 0;
   let last = performance.now(), fpsAcc = 0, fpsN = 0;
   // automatic resolution: when the frame rate stays below the target, render fewer pixels (the canvas is scaled up);
   // raise it again slowly once frames are fast enough. Every 2 s, between RES_MIN and the quality's normal scale.
@@ -1612,6 +1874,8 @@ void main() {
   }
   scene.preUpdate.addEventListener(() => {
     const now = performance.now(); const rawDt = (now - last) / 1000; const dt = Math.min(0.1, rawDt); last = now;
+    pickSlot = now - lastPickT >= PICK_MS; if (pickSlot) lastPickT = now;
+    gridBuildsThisFrame = 0;
     let t0 = PROF ? performance.now() : 0;
     updateWards(); if (PROF) t0 = PROF.add("wards", t0);
     updateAutoRes(rawDt);
@@ -1691,7 +1955,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, cpuHeightAt, cpuRay, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";

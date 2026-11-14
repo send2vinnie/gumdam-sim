@@ -110,6 +110,19 @@ below 20 FPS on Medium, Low is chosen from the next start, with a "Switch now" b
 your choice is kept. The pause menu shows the frame rate while flying, the current resolution and the quality in use.
 
 On every quality setting:
+* **No GPU picks in the game loop.** Finding the ground (roof or street) under the character, the walls ahead, the camera's
+  collision rays and each shot's path used to be GPU picks. A GPU pick reads pixels back, so the CPU waits for the GPU
+  every frame. The city's tiles are now intersected on the CPU instead: each tile's triangles are put once into a grid in
+  world space, and a ray only tests the few triangles along its way (0.1 ms instead of 10-60 ms a frame). Only tiles drawn
+  on screen count, and a query is trusted only if every tile with buildings on the ray is drawn; otherwise (spots out of
+  view, the cockpit looking ahead, Google tiles near a destroyed spot, the start screen) the GPU pick is still used, at
+  most every 70 ms (100 ms on phones and Low) and all in the same frame. Destroyed PLATEAU buildings are skipped by their
+  feature id. Shots fly straight, so one ray from where a shot is finds the first surface on all of its remaining path.
+  Measured on a laptop (NVIDIA T1200, Nishi-Shinjuku): Medium low flight 14.5 -> 23 FPS, walking 4.6 -> 15.6 FPS, hover and
+  firing 50-52 -> 60 FPS; Low low flight 20 -> 29 FPS (its 30 FPS cap) with the worst frames 126 -> 43 ms.
+* **Profiler:** add `?profile=1` to the address for an overlay with the time per frame (ms) of each part of the update
+  (area streaming, flight: ground and walls / physics / pose / HUD, weapons and effects, camera, start screen), Cesium's
+  render, the frame time, the FPS, the time in GPU picks and the share of frames that pick.
 * **Tokyo areas stream by distance.** Each of the 6 Tokyo areas is opened when the camera comes within the draw distance
   + 1 km of it (Low 4 km, others 7 km) and dropped, freeing its memory, 1.5 km beyond that. The Taipei start screen loads no
   Tokyo tiles at all.
