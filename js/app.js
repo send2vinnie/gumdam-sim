@@ -186,8 +186,26 @@
     C.Resource.prototype.fetchArrayBuffer = function () {
       const p = origFetch.apply(this, arguments);
       if (!p || !/\/cities\/tokyo\/.*\.b3dm/.test(this.url)) return p;   // undefined = throttled; Cesium retries later
-      return p.then((buf) => halveB3dmTextures(buf).catch((e) => { console.warn("texture downscale skipped", e); return buf; }));
+      return p.then((buf) => (texWorker.ready ? halveInWorker(buf) : halveB3dmTextures(buf)).catch((e) => { console.warn("texture downscale skipped", e); return buf; }));
     };
+  }
+  // The downscale (decode, draw, WebP encode) runs in a worker, so streaming tiles doesn't stall the frame; it was about
+  // 15% of the main thread's time in low flight. Until the worker reports ready (or if it can't start) it runs here.
+  const texWorker = { ready: false, w: null, next: 0, pending: new Map() };
+  function halveInWorker(buf) {
+    return new Promise((resolve) => { const id = texWorker.next++; texWorker.pending.set(id, resolve); texWorker.w.postMessage({ id, buf }, [buf]); });
+  }
+  if (LOW_GFX && typeof Worker === "function" && typeof OffscreenCanvas === "function") {
+    try {
+      const src = "const halveB3dmTextures = " + halveB3dmTextures.toString() + ";\n" +
+        "self.onmessage = async (e) => { let out; try { out = await halveB3dmTextures(e.data.buf); } catch (x) { out = e.data.buf; } self.postMessage({ id: e.data.id, buf: out }, [out]); };\n" +
+        "self.postMessage({ ready: typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function' });";
+      const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+      texWorker.w = new Worker(url);
+      texWorker.w.onmessage = (e) => { if (e.data && e.data.ready !== undefined) { texWorker.ready = !!e.data.ready; return; }
+        const r = texWorker.pending.get(e.data.id); texWorker.pending.delete(e.data.id); if (r) r(e.data.buf); };
+      texWorker.w.onerror = () => { texWorker.ready = false; };
+    } catch (e) { texWorker.ready = false; }
   }
   async function halveB3dmTextures(buf) {
     const dv = new DataView(buf), u8 = new Uint8Array(buf);

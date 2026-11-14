@@ -120,6 +120,7 @@ On every quality setting:
   feature id. Shots fly straight, so one ray from where a shot is finds the first surface on all of its remaining path.
   Measured on a laptop (NVIDIA T1200, Nishi-Shinjuku): Medium low flight 14.5 -> 23 FPS, walking 4.6 -> 15.6 FPS, hover and
   firing 50-52 -> 60 FPS; Low low flight 20 -> 29 FPS (its 30 FPS cap) with the worst frames 126 -> 43 ms.
+* **Low: the texture downscale runs in a worker**, so streaming city tiles doesn't stall the frame.
 * **Profiler:** add `?profile=1` to the address for an overlay with the time per frame (ms) of each part of the update
   (area streaming, flight: ground and walls / physics / pose / HUD, weapons and effects, camera, start screen), Cesium's
   render, the frame time, the FPS, the time in GPU picks and the share of frames that pick.
