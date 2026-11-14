@@ -45,7 +45,7 @@
   const DRAGON_NATIVE_H = 18.16;   // standing height (horn tips) in dragon.glb units
   const DRAGON_SCALE = DRAGON_HEIGHT_M / DRAGON_NATIVE_H;
   const RIDER_HEIGHT_M = 1.75;
-  const RIDER_EYE = [6.24, 12.08];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
+  const RIDER_EYE = [7.02, 11.70];         // rider eye in dragon.glb (flight frame X fwd, Y up; dragon units)
   const D_PITCH = 55 * DEG;                // body pitch baked into dragon.glb (native joints are in the upright frame)
   const DRAGON_JOINTS = {
     head: { p: [0, -3.0, 12.8], rest: -45 * DEG }, tail: { p: [0, 2.6, 4.5], rest: -52 * DEG },
@@ -58,7 +58,8 @@
   const DRAGON_HIP = [3.2, -0.6, 5.6], DRAGON_KNEE = [3.4, -1.0, 3.0], DRAGON_ANKLE = [3.4, -1.2, 1.0];
   const DRAGON_SOLE = [[3.4, 0.4, 0.0], [3.4, -3.7, 0.3]];   // heel and toe of the left foot (native)
   const DRAGON_ROOT = [0, 0, -1, 0, -0.57358, 0.81915, 0, 0, 0.81915, 0.57358, 0, 0, -7.94594, 3.08188, 0, 1];   // dragon.glb root: native -> flight frame
-  const DRAGON_WALK_RAISE = 40 * DEG;   // on foot the body is raised from the flight attitude to stand (15 deg forward lean)
+  const DRAGON_WALK_RAISE = 25 * DEG;   // on foot the body is raised from the flight attitude to stand (30 deg forward lean)
+  const DRAGON_WALK_HEAD_TILT = 12 * DEG;   // at most this much head tilt to compensate, so the horns stay close to the rider's hands
   const CHARACTERS = {
     gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, phys: { mass: 43.4, thrust: 7, climb: 5, rollRate: 45 * DEG, lift: "thrusters", stall: 0 }, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45],
       // walking (m/s, deg/s, m): run = Shift; step = highest ledge it steps onto (higher blocks), drop = edge it walks off,
@@ -1173,9 +1174,9 @@ void main() {
         const fold = fly.grounded && !fly.walking ? 25 * DEG * (1 - (fly.walkBlend || 0)) : 0;
         // walking: the head nods with each step and the tail sways from side to side
         const nod = Math.sin(fly.walkPhase * 2) * 4 * DEG * fly.gait, sway = Math.sin(fly.walkPhase) * 16 * DEG * fly.gait;
-        fly.headTilt = raise;
+        fly.headTilt = Math.min(raise, DRAGON_WALK_HEAD_TILT);
         poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7 + fa[0] + nod, fly.wingAmp * Math.sin(fly.wingPhase) + fold + fa[1], -fly.headYaw * 0.6 + sway,
-          { tilt: raise, legs: fly.dragonLegs || [0, 0, 0, 0, 0, 0] });
+          { tilt: fly.headTilt, legs: fly.dragonLegs || [0, 0, 0, 0, 0, 0] });
       } else {
         // while aiming, the head looks along the line of fire
         const aiming = fly.fireT !== undefined && fly.fireT < 1.4;

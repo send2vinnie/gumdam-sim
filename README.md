@@ -71,8 +71,10 @@ Pick one on the start screen (**Character**), remembered between visits.
   its lower neck like riding a horse: thighs out around the neck, knees bent about 95° so the shins hang down along its sides
   with the feet near its shoulders (checked at build time: the seat touches the neck within 0.5 cm and no part of the legs
   passes through it, even during head turns; where the legs would press in, the cloth bulges smoothly around the neck). The
-  rider leans forward with both hands on the horns, gripping them from behind: elbows bent about 30° and pointing out, the
-  forearms rolled so the palms face forward, and no twist at the elbows. The rider is skinned to the dragon's joints, so the
+  rider leans well forward (about 55°) with both hands low on the horns, gripping them from behind like handlebars: the
+  elbows bent about 80° and lifted up and out, the forearms rolled so the palms face forward, and no twist at the elbows.
+  While walking, the dragon raises its body only part way and tilts its head at most 12°, so the horns stay within the
+  rider's reach. The rider is skinned to the dragon's joints, so the
   hands stay on the horns when the head turns. To use another dragon size, change `DRAGON_HEIGHT_M` in `js/app.js` and rebuild
   the model with `node tools/build_dragon_rider.js <dragon folder> <trainer folder> models/dragon.glb <height>` followed by
   `node tools/build_dragon_legs.js models/dragon.glb`, so the rider stays 1.75 m.
@@ -141,7 +143,7 @@ lurch forward, no control), then it walks.
   it walks with a stride that lengthens when running, a body bob that keeps the lower foot on the ground, the shield arm (with
   the whole shield) and (when not aiming) the rifle arm swinging opposite the legs, a slight forward lean when running, and a dust puff at each
   footfall. "Camera shake" in Settings (off by default) adds a tiny nudge per step.
-* **Dragon:** stands up from its flight attitude (about 15° forward lean, 25° when running) and walks on its own legs: hip,
+* **Dragon:** stands up from its flight attitude (about 30° forward lean, 40° when running) and walks on its own legs: hip,
   knee and ankle joints (added by tools/build_dragon_legs.js) swing each leg in turn, the stride lengthens when running, the
   feet stay level and the body is placed so the lower foot is always on the ground. The wings keep their flight pose (no
   flapping), the head is tilted to keep looking ahead and nods with each step, the tail sways and stays clear of the ground,

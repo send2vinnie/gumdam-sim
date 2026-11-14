@@ -18,9 +18,10 @@ const DEG = Math.PI / 180;
 // legs: thigh and shin directions for the left leg (the right mirrors y), like riding a horse: thighs out around the neck,
 // shins hanging down and a little back along its sides (knee bent about 95 deg). The hug pass keeps them just outside it.
 // arms: the torso leans forward (at least `lean`, more if needed) until both hands reach the horns with the elbows bent
-// about `elbow` degrees; elbows point out and down, the forearms roll so the palms face forward onto the horns.
-const P = { lean: 46 * DEG, headUp: -22 * DEG, legT: [0.35, 0.9, -0.25], legS: [-0.6, -0.05, -0.8], elbow: 30 * DEG,
-  seat: [12.9, 6.05, 0], seatNy: -1.8, seatLift: -0.36, gripBack: 0.5 };   // seat on the lower neck (flight frame), lift above the neck top
+// about 80 deg; the arms angle down from the shoulders and the elbows are lifted up and out (like gripping handlebars),
+// the forearms roll so the palms face forward onto the horns.
+const P = { lean: 55 * DEG, headUp: -30 * DEG, legT: [0.4, 0.85, -0.35], legS: [-0.75, 0.0, -0.65], elbow: 80 * DEG,
+  seat: [12.9, 6.05, 0], seatNy: -2.0, seatLift: -0.45, gripBack: 0.5 };   // seat on the lower neck (flight frame), lift above the neck top
 if (process.env.RIDER_POSE) { const o = JSON.parse(process.env.RIDER_POSE); for (const [kk, v] of Object.entries(o)) P[kk] = ["seat", "seatNy", "seatLift", "gripBack", "legT", "legS"].includes(kk) ? v : v * DEG; }
 const CHECK_ONLY = !!process.env.CHECK_ONLY;
 const HIP_Z = 8.4, HIP_Y = 0.95, KNEE_Z = 4.4, SH_Z = 13.1, SH_Y = 2.15, EL_Y = 5.0, PALM_Y = 7.9, NECK_Z = 14.7;
@@ -114,16 +115,21 @@ const armA = SH_Y < EL_Y ? EL_Y - SH_Y : 0, armB = PALM_Y - EL_Y;
 const reachAt = (bend) => Math.sqrt(armA * armA + armB * armB + 2 * armA * armB * Math.cos(bend));   // shoulder-palm distance for an elbow bend
 const gripOf = (hs) => lerp(flightToRider(hornTipF[hs]), flightToRider(hornBaseF[hs]), P.gripBack);
 const leanFor = (l) => (p) => rot(p, [0, 0, HIP_Z], [0, 1, 0], l);
-{ let l = P.lean; const need = reachAt(P.elbow * 0.8);
-  while (l < 75 * DEG && [[1, "L"], [-1, "R"]].some(([sd, hs]) => len(sub(gripOf(hs), leanFor(l)([0, sd * SH_Y, SH_Z]))) > need)) l += 0.5 * DEG;
-  P.lean = l; }
+// lean: scan 40..75 deg for the elbow bend closest to P.elbow (a slight preference for leaning about P.lean)
+const bendFor = (d) => Math.acos(Math.max(-1, Math.min(1, (d * d - armA * armA - armB * armB) / (2 * armA * armB))));
+{ let best = P.lean, bc = Infinity;
+  for (let l = 40 * DEG; l <= 75 * DEG + 1e-9; l += 0.5 * DEG) {
+    const bends = [[1, "L"], [-1, "R"]].map(([sd, hs]) => bendFor(len(sub(gripOf(hs), leanFor(l)([0, sd * SH_Y, SH_Z])))));
+    const c = bends.reduce((m, x) => Math.max(m, Math.abs(x - P.elbow)), 0) + 0.15 * Math.abs(l - P.lean);
+    if (c < bc) { bc = c; best = l; } }
+  P.lean = best; }
 for (const [side, hs] of [[1, "L"], [-1, "R"]]) {
   const S0 = [0, side * SH_Y, SH_Z], E0 = [0, side * EL_Y, SH_Z], H0 = [0, side * PALM_Y, SH_Z];
   const S = lean(S0);
   const H = gripOf(hs);
-  const a = armA, b = armB; const dv = sub(H, S); const d = Math.min(len(dv), reachAt(P.elbow * 0.5));
+  const a = armA, b = armB; const dv = sub(H, S); const d = Math.min(len(dv), reachAt(20 * DEG));
   const u = nrm(dv); const xC = (a * a - b * b + d * d) / (2 * d), r = Math.sqrt(Math.max(0, a * a - xC * xC));
-  const C = add(S, mul(u, xC)); const want = [S[0] - 0.5, S[1] + side * 1.5, S[2] - 4.0]; let v = sub(want, C); v = sub(v, mul(u, dot(v, u)));
+  const C = add(S, mul(u, xC)); const want = [S[0] - 0.5, S[1] + side * 3.0, S[2] + 2.5]; /* elbows lifted up and out (handlebar grip) */ let v = sub(want, C); v = sub(v, mul(u, dot(v, u)));
   const E = len(v) > 1e-6 ? add(C, mul(nrm(v), r)) : add(S, mul(u, a));
   const Hreach = add(E, mul(nrm(sub(H, E)), b));
   // one elbow hinge for the upper arm and the forearm (no twist at the elbow). T-pose: arm along +-y, palm down (-z),
@@ -233,11 +239,11 @@ for (const q of RP) {
       if (sd < MARGIN && bt) { const need = MARGIN - sd; if (!pushes[li] || need > pushes[li].need) pushes[li] = { need, n: bt.n }; } if (sd < minS) { minS = sd; global.__worst = { p, f: sub(L.toGl(L.pitchP(p)), [0, 0, 0]), tri: bt.vs[0] }; } if (sd < 0) inside++; }
     if (minS < worst) { worst = minS; worstPose = [yaw, pitch]; } nInside = Math.max(nInside, inside); if (yaw === 0 && pitch === 0) global.__seatGap = seatMin;
   }
-  // push out smoothly: each push also moves nearby leg vertices (soft falloff, about 15 cm), so the cloth bulges around
+  // push out smoothly: each push also moves nearby leg vertices (soft falloff, about 11 cm), so the cloth bulges around
   // the neck instead of single vertices (or one side of a UV seam) poking out as spikes
   let moved = 0; if (pass < PASSES - 1) {
-    const src = []; pushes.forEach((ps, i) => { if (ps) { const [pi, vi] = legRef[i]; src.push({ p: prims[pi].P[vi], v: mul(ps.n, ps.need * 1.15) }); } });
-    const R2 = (0.7) ** 2;
+    const src = []; pushes.forEach((ps, i) => { if (ps) { const [pi, vi] = legRef[i]; src.push({ p: prims[pi].P[vi], v: mul(ps.n, ps.need * +(process.env.HUG_GAIN || 1.0)) }); } });
+    const R2 = (+(process.env.HUG_R || 0.5)) ** 2;
     if (src.length) legRef.forEach(([pi, vi]) => { const p0 = prims[pi].P[vi]; let best = null, bm = 0;
       for (const s0 of src) { const d2 = (p0[0] - s0.p[0]) ** 2 + (p0[1] - s0.p[1]) ** 2 + (p0[2] - s0.p[2]) ** 2; const f = Math.exp(-d2 / R2), m = len(s0.v) * f; if (m > bm) { bm = m; best = mul(s0.v, f); } }
       if (best && bm > 1e-4) { prims[pi].P[vi] = add(p0, best); moved++; } });
