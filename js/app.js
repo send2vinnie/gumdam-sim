@@ -53,6 +53,12 @@
   };
   const D_UP = [0, Math.sin(D_PITCH), Math.cos(D_PITCH)];     // flight "up" in the dragon's native frame (yaw axis)
   const D_FWD = [0, -Math.cos(D_PITCH), Math.sin(D_PITCH)];   // flight "forward" in the native frame (wing-beat axis)
+  // walking legs (tools/build_dragon_legs.js): hip -> knee -> ankle under the body joint, native frame (+x its left, -y forward,
+  // +z up); a negative turn about x swings a leg forward. Translations are relative to the parent joint.
+  const DRAGON_HIP = [3.2, -0.6, 5.6], DRAGON_KNEE = [3.4, -1.0, 3.0], DRAGON_ANKLE = [3.4, -1.2, 1.0];
+  const DRAGON_SOLE = [[3.4, 0.4, 0.0], [3.4, -3.7, 0.3]];   // heel and toe of the left foot (native)
+  const DRAGON_ROOT = [0, 0, -1, 0, -0.57358, 0.81915, 0, 0, 0.81915, 0.57358, 0, 0, -7.94594, 3.08188, 0, 1];   // dragon.glb root: native -> flight frame
+  const DRAGON_WALK_RAISE = 40 * DEG;   // on foot the body is raised from the flight attitude to stand (15 deg forward lean)
   const CHARACTERS = {
     gundam: { name: "Gundam RX-78-02 (18 m)", leanMax: 55, phys: { mass: 43.4, thrust: 7, climb: 5, rollRate: 45 * DEG, lift: "thrusters", stall: 0 }, center: MS_CENTER, eye: 16.6, eyeFwd: 1.5, height: MS_HEIGHT, unit: "MS height", cams: [55, 160, 45],
       // walking (m/s, deg/s, m): run = Shift; step = highest ledge it steps onto (higher blocks), drop = edge it walks off,
@@ -509,18 +515,27 @@ void main() {
   const scratchQ = new C.Quaternion(), scratchQ2 = new C.Quaternion(), scratchM3 = new C.Matrix3();
   const axisQ = (a, ang, res) => C.Quaternion.fromAxisAngle(new C.Cartesian3(a[0], a[1], a[2]), ang, res);
   function setJoint(node, p, q) { node.matrix = C.Matrix4.fromRotationTranslation(C.Matrix3.fromQuaternion(q, scratchM3), new C.Cartesian3(p[0], p[1], p[2]), new C.Matrix4()); }
-  function poseDragon(model, yaw, pitch, wing, tailYaw) {
+  function poseDragon(model, yaw, pitch, wing, tailYaw, walk) {
     if (!model || !model.ready) return;
-    if (!model.__nodes) { const n = {}; for (const k of ["head", "wingL", "wingR", "tail"]) { try { n[k] = model.getNode(k); } catch (e) { n[k] = null; } } model.__nodes = n; }
-    const N = model.__nodes, J = DRAGON_JOINTS;
+    if (!model.__nodes) { const n = {}; for (const k of ["head", "wingL", "wingR", "tail", "hipL", "kneeL", "ankleL", "hipR", "kneeR", "ankleR"]) { try { n[k] = model.getNode(k); } catch (e) { n[k] = null; } } model.__nodes = n; }
+    const N = model.__nodes, J = DRAGON_JOINTS, tilt = walk ? walk.tilt : 0;
     if (N.head) { // yaw about flight-up, then pitch about the lateral axis, on top of the resting head angle
-      C.Quaternion.multiply(axisQ(D_UP, -yaw, scratchQ), axisQ([1, 0, 0], -pitch * 0.8 + J.head.rest, scratchQ2), scratchQ);
+      // (walking: tilted down by as much as the body is raised, so the head still looks ahead)
+      C.Quaternion.multiply(axisQ(D_UP, -yaw, scratchQ), axisQ([1, 0, 0], -pitch * 0.8 + J.head.rest + tilt, scratchQ2), scratchQ);
       setJoint(N.head, J.head.p, scratchQ);
+    }
+    if (N.hipL && N.hipR) {   // legs (rest = identity, as in the model)
+      const a = walk ? walk.legs : [0, 0, 0, 0, 0, 0];
+      for (const [k, i, sx] of [["L", 0, 1], ["R", 3, -1]]) {
+        setJoint(N["hip" + k], [DRAGON_HIP[0] * sx, DRAGON_HIP[1], DRAGON_HIP[2]], axisQ([1, 0, 0], a[i], scratchQ));
+        setJoint(N["knee" + k], [(DRAGON_KNEE[0] - DRAGON_HIP[0]) * sx, DRAGON_KNEE[1] - DRAGON_HIP[1], DRAGON_KNEE[2] - DRAGON_HIP[2]], axisQ([1, 0, 0], a[i + 1], scratchQ));
+        setJoint(N["ankle" + k], [0, DRAGON_ANKLE[1] - DRAGON_KNEE[1], DRAGON_ANKLE[2] - DRAGON_KNEE[2]], axisQ([1, 0, 0], a[i + 2], scratchQ));
+      }
     }
     // left wing is on native +x: a positive turn about the forward axis lifts it; the right wing mirrors
     if (N.wingL) setJoint(N.wingL, J.wingL.p, axisQ(D_FWD, wing, scratchQ));
     if (N.wingR) setJoint(N.wingR, J.wingR.p, axisQ(D_FWD, -wing, scratchQ));
-    if (N.tail) { C.Quaternion.multiply(axisQ(D_UP, tailYaw, scratchQ), axisQ([1, 0, 0], J.tail.rest, scratchQ2), scratchQ); setJoint(N.tail, J.tail.p, scratchQ); }
+    if (N.tail) { C.Quaternion.multiply(axisQ(D_UP, tailYaw, scratchQ), axisQ([1, 0, 0], J.tail.rest + tilt, scratchQ2), scratchQ); setJoint(N.tail, J.tail.p, scratchQ); }
   }
 
   function whenReady(model) {
@@ -997,7 +1012,7 @@ void main() {
     fly.h = 40 + (spawn.alt || 150);  // Tokyo geoid ≈ +37 m; corrected to true AGL once tiles report ground
     fly.needsAglFix = spawn.alt || 150;
     fly.ground = undefined;
-    fly.walking = false; fly.stumbleT = 0; fly.walkBlend = 0; fly.gait = 0; fly.gaitRun = 0; fly.walkPhase = 0; fly.bob = 0;
+    fly.walking = false; fly.stumbleT = 0; fly.walkBlend = 0; fly.gait = 0; fly.gaitRun = 0; fly.walkPhase = 0; fly.bob = 0; fly.dragonLegs = null; fly.headTilt = 0;
   }
 
   function updateFlight(dt) {
@@ -1124,7 +1139,9 @@ void main() {
     const k = 1 - Math.exp(-dt * 3);
     const gaitSpeed = Math.hypot(fly.vf, fly.vs);
     if (fly.walking) {   // upright on foot: a slight forward lean when running, a lurch forward while stumbling
-      const lw = (Math.max(0, fly.vf) / WK.run) * (fly.character === "dragon" ? 4 : 9) + (fly.stumbleT > 0 ? 16 * Math.sin(Math.min(1, fly.stumbleT / 1.2) * Math.PI) : 0);
+      // the dragon also stands up from its flight attitude (body raised, a little less when running)
+      const lw = (Math.max(0, fly.vf) / WK.run) * (fly.character === "dragon" ? 10 : 9) + (fly.stumbleT > 0 ? 16 * Math.sin(Math.min(1, fly.stumbleT / 1.2) * Math.PI) : 0)
+        - (fly.character === "dragon" ? DRAGON_WALK_RAISE / DEG : 0);
       fly.lean += (lw * DEG - fly.lean) * (1 - Math.exp(-dt * 6)); fly.bank += (0 - fly.bank) * (1 - Math.exp(-dt * 6));
     } else { fly.lean += (targetLean - fly.lean) * k; fly.bank += (targetBank - fly.bank) * k; }
     updateGait(dt, gaitSpeed, WK);
@@ -1134,20 +1151,31 @@ void main() {
     fly.headYaw = (fly.headYaw || 0) + (turn * 30 * DEG - (fly.headYaw || 0)) * kh;
     fly.headPitch = (fly.headPitch || 0) + (Math.max(-1, Math.min(1, fly.vu / MAX_VERT)) * 12 * DEG - (fly.headPitch || 0)) * kh;
     if (fly.model) {
-      const waddle = fly.character === "dragon" ? Math.sin(fly.walkPhase) * 3 * DEG * fly.gait : 0;
+      const dragon = fly.character === "dragon";
+      const waddle = dragon ? Math.sin(fly.walkPhase) * 3 * DEG * fly.gait : 0;
+      if (dragon && fly.dragonLegs) {
+        // feet on the ground: place the model so the lowest heel or toe touches the surface (blended in with walking)
+        const m0 = modelMatrixFor(fly.lat, fly.lon, fly.h, fly.az, -fly.lean, fly.bank + waddle, CH().center);
+        const low = dragonLowestSole(m0, fly.dragonLegs);
+        fly.bob = (fly.bob || 0) + (-low * (fly.walkBlend || 0) - (fly.bob || 0)) * (1 - Math.exp(-dt * 20));
+      }
       fly.model.modelMatrix = modelMatrixFor(fly.lat, fly.lon, fly.h + fly.bob, fly.az, -fly.lean, fly.bank + waddle, CH().center);
-      if (fly.character === "dragon") {
-        // wings: slow beats when cruising, faster and deeper on boost, nearly folded when landed, still while walking
+      if (dragon) {
+        // wings: slow beats when cruising, faster and deeper on boost, nearly folded when landed; on foot they keep
+        // their flight pose and do not beat
         const beat = fly.walking ? 0 : fly.grounded ? 0.35 : input.boost ? 2.2 : 0.9 + 0.6 * Math.min(1, Math.abs(fly.vu) / MAX_VERT);
         fly.wingPhase = ((fly.wingPhase || 0) + dt * beat * 2 * Math.PI) % (2 * Math.PI);
         const amp = (fly.walking ? 0 : fly.grounded ? 4 : input.boost ? 34 : 22) * DEG;
         fly.wingAmp = (fly.wingAmp || amp) + (amp - (fly.wingAmp || amp)) * (1 - Math.exp(-dt * 3));
         // the rider sits on the neck holding the horns, so the head turns a little less than the Gundam's
         const fa = dragonFireAnim();
-        const fold = (fly.grounded ? 25 * DEG : 0) + DRAGON_WALK_FOLD * (fly.walkBlend || 0);
+        const raise = Math.max(0, -fly.lean);   // how far the body is raised from its flight attitude
+        const fold = fly.grounded && !fly.walking ? 25 * DEG * (1 - (fly.walkBlend || 0)) : 0;
         // walking: the head nods with each step and the tail sways from side to side
         const nod = Math.sin(fly.walkPhase * 2) * 4 * DEG * fly.gait, sway = Math.sin(fly.walkPhase) * 16 * DEG * fly.gait;
-        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7 + fa[0] + nod, fly.wingAmp * Math.sin(fly.wingPhase) + fold + fa[1], -fly.headYaw * 0.6 + sway);
+        fly.headTilt = raise;
+        poseDragon(fly.model, fly.headYaw * 0.7, fly.headPitch * 0.7 + fa[0] + nod, fly.wingAmp * Math.sin(fly.wingPhase) + fold + fa[1], -fly.headYaw * 0.6 + sway,
+          { tilt: raise, legs: fly.dragonLegs || [0, 0, 0, 0, 0, 0] });
       } else {
         // while aiming, the head looks along the line of fire
         const aiming = fly.fireT !== undefined && fly.fireT < 1.4;
@@ -1183,6 +1211,11 @@ void main() {
       // cockpit (Gundam) / rider's eye view (dragon): eye at head height, looking forward
       camera.lookAtTransform(C.Matrix4.IDENTITY);
       const s = Math.sin(fly.az * DEG), c = Math.cos(fly.az * DEG);
+      if (fly.character === "dragon" && fly.walking && fly.model) {   // on foot: the rider's eye moves with the raised body
+        const k = DRAGON_SCALE, eyeW = toWorld(fly.model.modelMatrix, [(RIDER_EYE[0] + 0.7) * k, 0, RIDER_EYE[1] * k]);
+        camera.setView({ destination: eyeW, orientation: { heading: fly.az * DEG + look.yaw, pitch: look.pitch, roll: 0 } });
+        return;
+      }
       const eye = offsetLL(fly.lat, fly.lon, s * ch.eyeFwd, c * ch.eyeFwd);
       camera.setView({ destination: C.Cartesian3.fromDegrees(eye.lon, eye.lat, fly.h + ch.eye),
         orientation: { heading: fly.az * DEG + look.yaw, pitch: -fly.lean * 0.5 + look.pitch, roll: fly.bank * 0.5 } });
@@ -1247,7 +1280,14 @@ void main() {
     const g = [BODY_T[0] + BODY_S * a[2], BODY_T[1] + BODY_S * a[1], BODY_T[2] - BODY_S * a[0]];   // Ry(+90): (x,y,z) -> (z, y, -x)
     return toWorld(fly.model.modelMatrix, [g[0], -g[2], g[1]]);                                 // glTF Y-up -> Cesium Z-up
   }
-  function dragonMouthWorld() { const s = DRAGON_SCALE, m = DRAGON_MOUTH; return toWorld(fly.model.modelMatrix, [m[0] * s, -m[2] * s, m[1] * s]); }
+  function dragonMouthWorld() {
+    const s = DRAGON_SCALE, m = DRAGON_MOUTH;
+    if (!fly.headTilt) return toWorld(fly.model.modelMatrix, [m[0] * s, -m[2] * s, m[1] * s]);
+    // walking: the head is tilted down about its joint; flight frame -> native, turn about the head joint, -> model space
+    const R = DRAGON_ROOT, d = [m[0] - R[12], m[1] - R[13], m[2] - R[14]];
+    const n = [R[0] * d[0] + R[1] * d[1] + R[2] * d[2], R[4] * d[0] + R[5] * d[1] + R[6] * d[2], R[8] * d[0] + R[9] * d[1] + R[10] * d[2]];
+    return toWorld(fly.model.modelMatrix, dragonNativeToModel(rotXAbout(n, DRAGON_JOINTS.head.p, fly.headTilt)));
+  }
   // at most MAX_FX particle systems at once (flashes do not count); the oldest goes first
   function addEffect(sys, life, isDust) {
     scene.primitives.add(sys); effects.push({ sys, t: 0, life, dust: !!isDust });
@@ -1406,7 +1446,27 @@ void main() {
   // pivots at hip / knee / ankle (body-node units, +y up, +z forward, +x = its left); a negative turn about x swings forward.
   const LEG_T = 7.6, LEG_S = 13.3, LEG_F = 4.6, LEG_REST = LEG_T + LEG_S + LEG_F;   // hip-knee, knee-ankle, ankle-sole (units)
   const LEG_NODES = { thighL: [3.2, 25.5, 0], shinL: [0, -7.6, -0.1], footL: [0, -13.3, 0.1], thighR: [-3.2, 25.5, 0], shinR: [0, -7.6, -0.1], footR: [0, -13.3, 0.1], armL: [6.4, 38.6, -0.9] };
-  const DRAGON_WALK_FOLD = 55 * DEG;   // walking: the wings are raised together over the back (they have no fold joint)
+  // lowest point of the dragon's feet (heel/toe), metres above the character's position, for a candidate model matrix
+  const rotXAbout = (p, c, a) => { const y = p[1] - c[1], z = p[2] - c[2], cs = Math.cos(a), sn = Math.sin(a); return [p[0], c[1] + y * cs - z * sn, c[2] + y * sn + z * cs]; };
+  function dragonNativeToModel(n) {   // native (dragon units) -> model space (Cesium axes: x forward, y left, z up; metres)
+    const M = DRAGON_ROOT, k = DRAGON_SCALE;
+    const g0 = M[0] * n[0] + M[4] * n[1] + M[8] * n[2] + M[12], g1 = M[1] * n[0] + M[5] * n[1] + M[9] * n[2] + M[13], g2 = M[2] * n[0] + M[6] * n[1] + M[10] * n[2] + M[14];
+    return [g0 * k, -g2 * k, g1 * k];
+  }
+  const scratchBase = new C.Cartesian3(), scratchUp = new C.Cartesian3();
+  function dragonLowestSole(m, a) {
+    C.Cartesian3.fromDegrees(fly.lon, fly.lat, fly.h, undefined, scratchBase); C.Cartesian3.normalize(scratchBase, scratchUp);
+    let low = Infinity;
+    for (const [sx, i] of [[1, 0], [-1, 3]]) {
+      const H = [DRAGON_HIP[0] * sx, DRAGON_HIP[1], DRAGON_HIP[2]], K = [DRAGON_KNEE[0] * sx, DRAGON_KNEE[1], DRAGON_KNEE[2]], A = [DRAGON_ANKLE[0] * sx, DRAGON_ANKLE[1], DRAGON_ANKLE[2]];
+      for (const s0 of DRAGON_SOLE) {
+        let q = rotXAbout([s0[0] * sx, s0[1], s0[2]], A, a[i + 2]); q = rotXAbout(q, K, a[i + 1]); q = rotXAbout(q, H, a[i]);   // ankle, knee, hip (outermost last)
+        const w = toWorld(m, dragonNativeToModel(q));
+        low = Math.min(low, C.Cartesian3.dot(C.Cartesian3.subtract(w, scratchBase, w), scratchUp));
+      }
+    }
+    return low;
+  }
   const scratchLegM3 = new C.Matrix3();
   function legNodes(model) {
     if (!model || !model.ready) return null;
@@ -1432,8 +1492,18 @@ void main() {
     if (crossed(3 * Math.PI / 2)) footfall(-1, r);
     let bob = 0;
     if (dragon) {
-      bob = -Math.abs(Math.sin(ph)) * (0.05 + 0.08 * r) * g;
+      // legs: the hips first bring the legs under the (forward-leaning) body, then the walk cycle; the feet stay level.
+      // The body height (feet on the ground) is set where the model is placed (see dragonLowestSole).
+      const lean = Math.max(0, D_PITCH + fly.lean);   // how far the native (standing) frame leans forward now
+      const A = (24 + 14 * r) * DEG * g, K = (40 + 30 * r) * DEG * g;
+      let st = 0; if (fly.stumbleT > 0) st = Math.sin(Math.min(1, (1.2 - fly.stumbleT) / 0.5) * Math.PI / 2) * Math.min(1, fly.stumbleT / 0.5);
+      const wb = fly.walkBlend || 0;
+      const leg = (p) => { const swing = -A * Math.sin(p) - 30 * DEG * st, knee = 4 * DEG * g + K * Math.pow(Math.max(0, Math.cos(p)), 1.5) + 60 * DEG * st;
+        return [-lean * wb + swing, knee, -(swing + knee) * 0.85]; };
+      fly.dragonLegs = leg(ph).concat(leg(ph + Math.PI));
       fly.armSwing = 0;
+      fly.bob = fly.bob || 0;   // set where the model is placed
+      return;
     } else {
       const legs = legNodes(fly.model);
       // swing angles (radians). Left hip = -A sin(ph) (forward when sin > 0); the right leg is half a cycle later.

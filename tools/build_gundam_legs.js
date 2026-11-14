@@ -35,7 +35,7 @@ function split(file) {
       if (c.mn[1] >= 4.0 && c.mx[1] <= 20.2) return "shin" + side;
       if (c.mn[1] >= 17.9 && c.mx[1] <= 28.0 && Math.abs(cx) >= 1.0 && ax <= 5.6) return "thigh" + side;
     }
-    if (c.mn[0] > 4.0 && c.mn[1] > 1.5 && c.mx[1] < 43) return "armL";   // the same rule that split armR, mirrored
+    if (c.mn[0] > 4.0 && c.mn[1] > 1.5 && c.mx[1] < 44.5) return "armL";   // the left arm and the whole shield (its plate reaches y 43.8)
     return null;
   };
   const pivotOf = (part) => { if (part === "armL") return SHOULDER_L; const p = part.startsWith("thigh") ? HIP : part.startsWith("shin") ? KNEE : ANKLE; return [part.endsWith("L") ? p[0] : -p[0], p[1], p[2]]; };

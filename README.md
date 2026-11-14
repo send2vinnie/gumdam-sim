@@ -135,11 +135,14 @@ lurch forward, no control), then it walks.
   Gundam, 0.8 m for the dragon). Anything taller is a wall and blocks you. Walking off a higher edge (more than 4 m / 1.5 m)
   drops you into flight. Up (Space, RT, right stick up) jumps and takes off.
 * **Gundam:** its legs are jointed at the hip, knee and ankle (split out of the flight model by tools/build_gundam_legs.js), so
-  it walks with a stride that lengthens when running, a body bob that keeps the lower foot on the ground, the shield arm and
-  (when not aiming) the rifle arm swinging opposite the legs, a slight forward lean when running, and a dust puff at each
+  it walks with a stride that lengthens when running, a body bob that keeps the lower foot on the ground, the shield arm (with
+  the whole shield) and (when not aiming) the rifle arm swinging opposite the legs, a slight forward lean when running, and a dust puff at each
   footfall. "Camera shake" in Settings (off by default) adds a tiny nudge per step.
-* **Dragon:** walks with its wings raised together over its back (they do not flap), a small bob and waddle per step, its
-  tail swaying and its head nodding; the rider stays in place.
+* **Dragon:** stands up from its flight attitude (about 15° forward lean, 25° when running) and walks on its own legs: hip,
+  knee and ankle joints (added by tools/build_dragon_legs.js) swing each leg in turn, the stride lengthens when running, the
+  feet stay level and the body is placed so the lower foot is always on the ground. The wings keep their flight pose (no
+  flapping), the head is tilted to keep looking ahead and nods with each step, the tail sways and stays clear of the ground,
+  and the rider stays in place.
 * **Camera:** the chase camera comes lower and closer on foot, blended in and out over about a second so it never jumps.
 
 ## Weapons and destructible buildings
@@ -180,12 +183,12 @@ Dragging still turns the camera. The app searches the 3D tiles within 250 m of t
 plaza rather than a roof. Move it by editing `lobby` in `config.js`.
 
 ## Files
-* `models/gundam_rx78_18m.glb` flight model (static pose, rifle and shield in hand, faces +X). Its head is a separate node (`head`, pivoted at the neck) so in flight it looks into turns (up to 30°) and up/down with climbs and dives, while the body banks into turns and pitches back when climbing and forward when diving. The legs (hip, knee and ankle: `thighL/R`, `shinL/R`, `footL/R`) and the shield arm (`armL`) are separate nodes too, split by `tools/build_gundam_legs.js` (all three detail levels), for the walking animation.
+* `models/gundam_rx78_18m.glb` flight model (static pose, rifle and shield in hand, faces +X). Its head is a separate node (`head`, pivoted at the neck) so in flight it looks into turns (up to 30°) and up/down with climbs and dives, while the body banks into turns and pitches back when climbing and forward when diving. The legs (hip, knee and ankle: `thighL/R`, `shinL/R`, `footL/R`) and the shield arm with the whole shield (`armL`) are separate nodes too, split by `tools/build_gundam_legs.js` (all three detail levels), for the walking animation.
 * `models/gundam_rx78_pullup_18m.glb` skinned model with the `PullUp` loop (faces +Z): 3 reps in 14.7 s that slow down with fatigue, a pause with the chin over the bar, a slower controlled descent, the upper body leaning back behind the bar as it rises (head over the bar from behind, legs swinging forward to balance), and legs that lag and swing slightly. The fists stay closed around a round bar in one overhand grip the whole time (the finger curl is baked into the mesh, so no extra joints are needed on phones), and the arms are solved every frame so the forearms stay near vertical under the bar while the elbows travel down and out.
 * `models/*_med.glb`, `models/*_low.glb` Medium and Low detail versions of both Gundam models
 * `models/pilot_*.glb` five pilot poses
 * `models/dragon_stand.glb`, `models/trainer_stand.glb` start-screen dragon (wing joints) and trainer (right-arm joint), built by `tools/build_lobby_actors.js`
-* `models/dragon.glb` dragon in flight attitude with a 5-joint rig (body, head, wings, tail) and its rider (built by `tools/build_dragon_rider.js`)
+* `models/dragon.glb` dragon in flight attitude with an 11-joint rig (body, head, wings, tail, and hip/knee/ankle per leg) and its rider (built by `tools/build_dragon_rider.js`; the leg joints are added by `tools/build_dragon_legs.js`)
 * `js/app.js` simulator, `config.js` key and locations, `sw.js` + `manifest.webmanifest` app install
 
 ## Credits
