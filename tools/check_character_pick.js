@@ -6,7 +6,7 @@ const [, , , URL, quality, kind] = process.argv;
 (async () => {
   const b = await chromium.launch({ args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
   const ctx = await b.newContext(Object.assign(kind === "mobile" ? { ...devices["Pixel 7"] } : { viewport: { width: 800, height: 500 } }, { serviceWorkers: "block" }));
-  await ctx.addInitScript((q) => { localStorage.setItem("gfs.quality", JSON.stringify(q)); localStorage.setItem("gfs.citySource", '"local"'); localStorage.setItem("gfs.character", '"gundam"'); localStorage.setItem("gfs.lobbyCollapsed", "true"); }, quality);
+  await ctx.addInitScript((q) => { localStorage.setItem("gfs.quality", JSON.stringify(q)); localStorage.setItem("gfs.character", '"gundam"'); localStorage.setItem("gfs.lobbyCollapsed", "true"); }, quality);
   const p = await ctx.newPage(); const errs = []; p.on("pageerror", (e) => errs.push(e.message));
   await p.goto(URL + "?t=" + Date.now()); await p.waitForFunction(() => window.GFS && GFS.ready, null, { timeout: 180000 });
   await p.waitForTimeout(kind === "mobile" ? 9000 : 7000);   // let automatic resolution settle

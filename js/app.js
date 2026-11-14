@@ -1,4 +1,4 @@
-/* Gundam Flight Simulator — CesiumJS + Google Photorealistic 3D Tiles.
+/* Gundam Flight Simulator — CesiumJS + local city maps (PLATEAU Tokyo, OSM Nangang).
  * All distances are metres. Models are authored at true scale:
  *   gundam_rx78_18m.glb         static flight model, 18.0 m head height, feet at origin, faces +X
  *   gundam_rx78_pullup_18m.glb  skinned model with a 14.7 s "PullUp" loop (3 reps), same scale
@@ -28,7 +28,18 @@
   window.addEventListener("unhandledrejection", (e) => showFatal("Promise error: " + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
   if (typeof Cesium === "undefined") { showFatal("CesiumJS failed to load from cdn.jsdelivr.net"); return; }
   const C = Cesium;
-  const CFG = window.SIM_CONFIG || {};
+  // Start screen ("game hall"): Taipei Nangang Exhibition Center, Hall 1. The app searches within searchRadius metres
+  // for open, flat ground (a plaza) so the pull-up rig never ends up on a roof or inside a building.
+  const LOBBY = { lat: 25.0556, lon: 121.6176, searchRadius: 250, heading: 0 };
+  // Tokyo starting points (heading = compass direction the character faces, degrees)
+  const SPAWNS = [
+    { name: "Nishi-Shinjuku skyscraper district", lat: 35.6886, lon: 139.6930, heading: 45,  alt: 160 },
+    { name: "Shibuya Crossing",                    lat: 35.6590, lon: 139.6995, heading: 20,  alt: 90 },
+    { name: "Tokyo Tower (333 m)",                 lat: 35.6528, lon: 139.7400, heading: 35,  alt: 120 },
+    { name: "Tokyo Station / Marunouchi",          lat: 35.6795, lon: 139.7640, heading: 30,  alt: 120 },
+    { name: "Tokyo Skytree (634 m)",               lat: 35.7040, lon: 139.8050, heading: 40,  alt: 250 },
+    { name: "Odaiba waterfront",                   lat: 35.6210, lon: 139.7700, heading: 340, alt: 80 }
+  ];
   const $ = (id) => document.getElementById(id);
   const DEG = Math.PI / 180;
   const R_EARTH = 6378137;
@@ -94,7 +105,6 @@
   }
   const storedQuality = store.get("quality", null);
   const settings = {
-    key: (store.get("key", "") || CFG.googleMapsApiKey || "").trim(),
     quality: storedQuality || (weakDevice() ? "low" : "medium"),
     qualityAuto: !storedQuality,   // not chosen by the user yet: the start screen checks the frame rate once
     invertY: store.get("invertY", false),
@@ -274,53 +284,14 @@ void main() {
   out_FragColor = vec4(min(v_color.rgb * (0.78 + 0.32 * sun), vec3(1.0)), v_color.a);
 }`;
 
-  // City source: "google" (Photorealistic 3D Tiles, online, needs a key) or "local" (bundled PLATEAU Tokyo + OSM Nangang)
-  const CITY_SOURCES = { local: "Local (offline): PLATEAU Tokyo + OSM Nangang", google: "Google Photorealistic (online, needs API key)" };
-  // Local maps are the default for everyone. Google is used only after the user picks it in Settings
-  // ("citySourceChosen" marks a real choice; values saved automatically by older versions are ignored).
-  settings.citySource = store.get("citySourceChosen", false) && CITY_SOURCES[store.get("citySource", null)] ? store.get("citySource", null) : "local";
+  // The city is always the local maps shipped with the game: PLATEAU Tokyo + OSM Nangang
   const tilesets = [];          // every 3D Tiles city layer currently shown
-  let worldMode = "demo";       // "google" | "local" | "demo"
-  let demoMode = false;
   let localWorld = null;        // { ground, osm: { features } } once the local city is loaded
   const allTilesLoaded = () => tilesets.every((t) => t.tilesLoaded);
 
-  async function initWorld() {
-    if (settings.citySource === "google") {
-      if (settings.key) {
-        try {
-          C.GoogleMaps.defaultApiKey = settings.key;
-          const ts = await C.createGooglePhotorealistic3DTileset(undefined, {
-            maximumScreenSpaceError: CITY_SSE[settings.cityDetail],
-            cacheBytes: lowMem ? 192 * 1024 * 1024 : QUALITY.cacheBytes,
-            showCreditsOnScreen: true,
-            enablePick: true,   // keep a CPU copy of the geometry for the CPU height/ray queries (else each one reads it back from the GPU)
-            imageBasedLighting: skyLight(),
-            dynamicScreenSpaceError: true,
-            preferLeaves: false
-          });
-          scene.primitives.add(ts); tilesets.push(ts);
-          scene.globe.show = false;
-          worldMode = "google";
-          return;
-        } catch (e) {
-          console.error(e);
-          showFatal("Google 3D Tiles failed to load: " + (e.message || e));
-          setStatus("Google 3D Tiles failed to load: " + (e.message || e) + ". Check the API key and that the Map Tiles API is enabled. Using the offline city instead.", true);
-        }
-      } else {
-        setStatus("Google city needs an API key (Settings). Using the offline city instead.", true);
-      }
-    }
-    try { await initLocalWorld(); worldMode = "local"; return; }
-    catch (e) { console.error(e); showFatal("Offline city failed to load: " + (e.message || e)); }
-    demoMode = true;
-    scene.globe.show = true;
-    scene.globe.baseColor = C.Color.fromCssColorString("#2b3442");
-    viewer.imageryLayers.addImageryProvider(new C.GridImageryProvider({
-      cells: 8, color: C.Color.fromCssColorString("#7dffb0").withAlpha(0.35),
-      glowColor: C.Color.TRANSPARENT, backgroundColor: C.Color.fromCssColorString("#1d2633"), tileWidth: 256, tileHeight: 256
-    }));
+  async function initWorld() {   // true when the city is ready
+    try { await initLocalWorld(); return true; }
+    catch (e) { console.error(e); showFatal("City maps failed to load: " + (e.message || e)); setStatus("City maps failed to load: " + (e.message || e) + ". Check the connection and reload.", true); return false; }
   }
 
   // ---- local (offline) city -------------------------------------------------
@@ -525,7 +496,7 @@ void main() {
     }
     return false;
   }
-  const DESTROYED_R = () => (worldMode === "google" ? 40 : 90);
+  const DESTROYED_R = () => 90;
   // closest hit of a ray with the drawn tiles of a tileset within maxDist. Like Cesium3DTileset.pick, but only tiles whose
   // bounds meet this stretch of the ray are tested (nearest first, stopping once no closer hit is possible), so a short
   // camera ray or a vertical height query tests a few tiles instead of every tile along the infinite ray.
@@ -671,7 +642,7 @@ void main() {
   const scratchDown = new C.Cartesian3(), scratchTop = new C.Cartesian3(), scratchVRay = new C.Ray();
   // top surface of the city tiles at a point: a height, undefined (no tile surface there) or null (unknown on the CPU)
   function cpuHeightAt(lon, lat, street) {
-    if (!tilesets.length || demoMode) return null;
+    if (!tilesets.length) return null;
     const pt = C.Cartesian3.fromDegrees(lon, lat, (street || 0) + 40, undefined, scratchCpuPt);
     const tss = cityTilesetsAt(pt); if (!tss.length) return null;
     if (nearDestroyed(pt, null, DESTROYED_R()) || !inView(pt, 60)) return null;
@@ -682,13 +653,12 @@ void main() {
     let h;
     for (const ts of tss) { let r; try { r = tilesetRay(ts, scratchVRay, 760); } catch (e) { return null; }
       if (r) { const hh = 700 + (street || 0) - r.distance; if (h === undefined || hh > h) h = hh; } }
-    if (h === undefined && !localWorld) return null;   // Google tiles include the ground: no hit means not known
     return h;
   }
   // first surface (city tiles or ground) along a ray within maxDist: { position, distance }, undefined (nothing) or null
   // (unknown on the CPU). checkView: the far end must be in view too (camera rays start in view and run toward the camera).
   function cpuRay(ray, maxDist, checkView) {
-    if (!tilesets.length || demoMode) return null;
+    if (!tilesets.length) return null;
     const end = C.Cartesian3.add(ray.origin, C.Cartesian3.multiplyByScalar(ray.direction, maxDist, scratchCpuA), new C.Cartesian3());
     if (!cityTilesetsAt(ray.origin).length) return null;
     if (checkView && (!inView(ray.origin, 1) || !inView(end, 1))) return null;
@@ -706,7 +676,6 @@ void main() {
   function groundHeightAt(lon, lat, exclude, gpuOk) {
     // height of the rendered surface (roof, street or terrain) below this point, metres above ellipsoid; undefined when
     // it can only be found with a GPU pick and gpuOk is false (callers then keep the last value)
-    if (demoMode) return 0;
     const now = performance.now(), key = Math.round(lat * 222390) + ":" + Math.round(lon * 222390 * Math.cos(lat * DEG));
     const hit = heightCache.get(key); if (hit && now - hit.t < 500) return hit.h;
     const h = groundHeightNow(lon, lat, exclude, gpuOk);
@@ -867,39 +836,11 @@ void main() {
   // ---- start screen (game hall) at Nangang Exhibition Center ---------------
   const lobby = { models: [], entities: [], lat: 0, lon: 0, ground: 0, heading: 0, orbit: 0, active: false };
 
-  async function findOpenGround(lat0, lon0, radius) {
-    // Look for flat, open ground (a plaza or wide road) near the requested point by
-    // sampling the 3D tiles. A spot is "open" when a 20 m ring around it is level with it.
-    if (worldMode === "local") return openGroundFromOsm(lat0, lon0, radius);
-    if (demoMode || !tilesets.length) return { lat: lat0, lon: lon0, h: 0 };
-    const pts = [], meta = [];
-    const step = 25;
-    for (let y = -radius; y <= radius; y += step) for (let x = -radius; x <= radius; x += step) {
-      if (x * x + y * y > radius * radius) continue;
-      const c = offsetLL(lat0, lon0, x, y); pts.push(C.Cartographic.fromDegrees(c.lon, c.lat)); meta.push({ x, y, ...c });
-    }
-    let res;
-    try { res = await scene.sampleHeightMostDetailed(pts); } catch (e) { return { lat: lat0, lon: lon0, h: 0 }; }
-    const hs = res.map((p) => (p && isFinite(p.height) ? p.height : NaN));
-    const valid = hs.filter((h) => isFinite(h)); if (!valid.length) return { lat: lat0, lon: lon0, h: 0 };
-    valid.sort((a, b) => a - b);
-    const streetLevel = valid[Math.floor(valid.length * 0.15)];
-    // candidates near street level, then check a ring of 8 points at 20 m
-    const cands = meta.map((m, i) => ({ ...m, h: hs[i], d: Math.hypot(m.x, m.y) }))
-      .filter((m) => isFinite(m.h) && Math.abs(m.h - streetLevel) < 2.5).sort((a, b) => a.d - b.d).slice(0, 24);
-    for (const c of cands) {
-      const ring = []; for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; const o = offsetLL(c.lat, c.lon, 20 * Math.cos(a), 20 * Math.sin(a)); ring.push(C.Cartographic.fromDegrees(o.lon, o.lat)); }
-      let rr; try { rr = await scene.sampleHeightMostDetailed(ring); } catch (e) { continue; }
-      if (rr.every((p) => p && isFinite(p.height) && Math.abs(p.height - c.h) < 1.8)) return c;
-    }
-    return cands[0] || { lat: lat0, lon: lon0, h: streetLevel };
-  }
-
   async function buildLobby() {
-    const L = CFG.lobby || { lat: 25.0556, lon: 121.6176, searchRadius: 250, heading: 0 };
+    const L = LOBBY;
     camera.setView({ destination: C.Cartesian3.fromDegrees(L.lon, L.lat - 0.0025, 260), orientation: { heading: 0, pitch: -30 * DEG, roll: 0 } });
     await waitForTiles(12000);
-    const spot = await findOpenGround(L.lat, L.lon, L.searchRadius || 250);
+    const spot = await openGroundFromOsm(L.lat, L.lon, L.searchRadius || 250);
     lobby.lat = spot.lat; lobby.lon = spot.lon; lobby.ground = spot.h || 0; lobby.heading = L.heading || 0;
     const H = lobby.heading;
 
@@ -959,8 +900,7 @@ void main() {
     lobby.active = true;
     $("scaleCard").innerHTML =
       "<b>True scale on this screen</b><br>Gundam (head height): <b>18.0 m</b> · Pilots: <b>1.75 m</b> (≈ 1/10 of the Gundam)<br>" +
-      "Pull-up bar: <b>22.1 m</b> high · " + (worldMode === "google" ? "Real buildings: Google 3D Tiles" : worldMode === "local"
-        ? "Offline city: PLATEAU Tokyo (MLIT) · OSM Nangang" : "Demo grid (no city)");
+      "Pull-up bar: <b>22.1 m</b> high · City: PLATEAU Tokyo (MLIT) · OSM Nangang";
   }
 
   // ---- camera collision ------------------------------------------------------------
@@ -1482,7 +1422,7 @@ void main() {
     $("hudThrust").style.width = Math.min(100, Math.abs(fly.vf) / (MAX_FWD * BOOST) * 100) + "%";
     $("hudAgl").textContent = isFinite(agl) ? agl.toFixed(0) : "--";
     $("hudAglMs").textContent = isFinite(agl) ? (agl / CH().height).toFixed(1) + " × " + CH().unit : "";
-    $("hudElev").textContent = (fly.h - (demoMode ? 0 : 37)).toFixed(0);
+    $("hudElev").textContent = (fly.h - 37).toFixed(0);
     $("hudVs").textContent = fly.vu.toFixed(1);
     $("hudMode").textContent = (fly.walking ? (fly.stumbleT > 0 ? "STUMBLE" : gaitSpeed > WK.walk * 1.3 ? "RUN" : "WALK") : fly.grounded ? "LANDED" : fly.boosting ? "BOOST" : settings.difficulty === "hard" && fly.vu < -6 ? "SINK" : "HOVER") + " · " + DIFFICULTIES[settings.difficulty].toUpperCase();
     const hard = settings.difficulty === "hard"; $("hudBoostRow").hidden = !hard;
@@ -1547,14 +1487,14 @@ void main() {
   // ---- weapons: beam rifle (Gundam) and fireball (dragon); destructible buildings ----------------------
   // One ray per shot (from the crosshair) finds what it will hit; the projectile then just flies there, so firing stays cheap.
   const WEAPONS = { gundam: { speed: 600, range: 1600, cooldown: 0.35 }, dragon: { speed: 80, range: 800, cooldown: 0.9 } };
-  const MAX_SHOTS = LOW_GFX ? 3 : 6, MAX_FX = LOW_GFX ? 7 : 12, MAX_CLIPS = LOW_GFX ? 6 : 12, FX_SCALE = LOW_GFX ? 0.5 : 1;   // fewer projectiles/particles on Low
+  const MAX_SHOTS = LOW_GFX ? 3 : 6, MAX_FX = LOW_GFX ? 7 : 12, FX_SCALE = LOW_GFX ? 0.5 : 1;   // fewer projectiles/particles on Low
   const ARM_PIVOT = [-6.4, 38.6, -0.9], MUZZLE = [0.01, -36.79, 1.38];             // gundam_rx78_18m*.glb: armR node (model units)
   const BODY_T = [-0.23696897, 0, 0], BODY_S = 0.3889163389802798;                   // body node transform (rotation +90 deg about Y)
   const DRAGON_MOUTH = [12.23, 8.22, 0.22];                                         // dragon.glb flight frame (dragon units)
   const shots = [], effects = [], shotLog = [];   // shotLog: how recent shots ended (for tests)
   const hiddenFeatures = new Map();   // tile content url -> Set(featureId) of destroyed PLATEAU buildings
   const hiddenOsm = new Set();
-  let fireCooldown = 0, shake = 0, clipCount = 0;
+  let fireCooldown = 0, shake = 0;
   const beamLines = scene.primitives.add(new C.PolylineCollection());
   const glowPoints = scene.primitives.add(new C.PointPrimitiveCollection());
   const sprite = (() => { const cache = {}; return (inner, outer) => { const k = inner + outer; if (cache[k]) return cache[k];
@@ -1609,7 +1549,7 @@ void main() {
   }
   function destroyAt(hit) {
     const obj = hit.object, pos = hit.position;
-    // PLATEAU buildings are skipped by feature id in the CPU queries; elsewhere (Google holes, OSM) queries near the spot
+    // PLATEAU buildings are skipped by feature id in the CPU queries; elsewhere (OSM) queries near the spot
     // use the GPU pick, which sees what is actually drawn
     if (!(obj instanceof C.Cesium3DTileFeature)) { destroyedSpots.push(C.Cartesian3.clone(pos)); if (destroyedSpots.length > 200) destroyedSpots.shift(); }
     if (obj instanceof C.Cesium3DTileFeature) {             // PLATEAU building: hide it (and keep it hidden when its tile reloads)
@@ -1622,27 +1562,18 @@ void main() {
       try { obj.primitive.getGeometryInstanceAttributes(obj.id).show = C.ShowGeometryInstanceAttribute.toValue(false); hiddenOsm.add(obj.id); } catch (e) { /* ignore */ }
       collapse(pos); return;
     }
-    if (worldMode === "google" && tilesets[0] && (obj && obj.primitive === tilesets[0] || hit.object === undefined)) { // one big mesh: cut a building-sized hole
-      const ts = tilesets[0];
-      if (!ts.clippingPolygons) ts.clippingPolygons = new C.ClippingPolygonCollection();
-      const cp = ts.clippingPolygons; if (cp.length >= MAX_CLIPS) cp.remove(cp.get(0));
-      const carto = C.Cartographic.fromCartesian(pos), lat = carto.latitude / DEG, lon = carto.longitude / DEG, r = 16;
-      const ring = [[-r, -r], [r, -r], [r, r], [-r, r]].map(([e, n]) => { const o = offsetLL(lat, lon, e, n); return C.Cartesian3.fromDegrees(o.lon, o.lat); });
-      cp.add(new C.ClippingPolygon({ positions: ring })); clipCount++;
-      collapse(pos);
-    }
   }
   function reapplyHidden(tile) {
     const set = tile && tile.content && hiddenFeatures.get(tile.content.url); if (!set) return;
     for (const id of set) { try { if (id < tile.content.featuresLength) tile.content.getFeature(id).show = false; } catch (e) { /* ignore */ } }
   }
   function rebuildCity() {
-    for (const ts of tilesets) { if (ts.clippingPolygons) ts.clippingPolygons.removeAll();
+    for (const ts of tilesets) {
       // show every feature of loaded tiles again
       try { ts.root && (function walk(t) { if (t.content && t.content.featuresLength) for (let i = 0; i < t.content.featuresLength; i++) t.content.getFeature(i).show = true; (t.children || []).forEach(walk); })(ts.root); } catch (e) { /* ignore */ } }
     hiddenFeatures.clear();
     if (localWorld && localWorld.osmPrimitive) for (const id of hiddenOsm) { try { localWorld.osmPrimitive.getGeometryInstanceAttributes(id).show = C.ShowGeometryInstanceAttribute.toValue(true); } catch (e) { /* ignore */ } }
-    hiddenOsm.clear(); clipCount = 0; destroyedSpots.length = 0;
+    hiddenOsm.clear(); destroyedSpots.length = 0;
   }
   function requestFire() {
     if (state.mode !== "fly" || !fly.model || fireCooldown > 0) return;
@@ -1932,7 +1863,7 @@ void main() {
   }
 
   // ---- UI wiring ----------------------------------------------------------------
-  const spawns = CFG.spawns || [];
+  const spawns = SPAWNS;
   for (const sel of [$("spawnSelect"), $("teleportSelect")]) spawns.forEach((s, i) => sel.add(new Option(s.name, i)));
   $("startBtn").onclick = () => startFlight(spawns[+$("spawnSelect").value] || spawns[0]);
   const charNote = () => { $("characterNote").textContent = settings.character === "dragon"
@@ -1963,7 +1894,7 @@ void main() {
   $("camBtn").onclick = cycleCamera;
   $("menuBtn").onclick = togglePause;
   const openSettings = () => {
-    $("citySource").value = settings.citySource; $("keyInput").value = settings.key; $("qualitySelect").value = settings.quality;
+    $("qualitySelect").value = settings.quality;
     $("invertY").checked = settings.invertY; $("showFps").checked = settings.showFps; $("autoRes").checked = settings.autoRes; $("camShake").checked = settings.camShake; $("settingsDlg").showModal();
   };
   $("settingsBtn").onclick = openSettings; $("pSettingsBtn").onclick = openSettings;
@@ -1975,8 +1906,7 @@ void main() {
   $("modelDetail").onchange = () => setModelDetail($("modelDetail").value);
   updateDetailInfo();
   $("saveSettings").onclick = () => {
-    if ($("citySource").value !== settings.citySource) { store.set("citySource", $("citySource").value); store.set("citySourceChosen", true); }
-    store.set("key", $("keyInput").value.trim()); store.set("quality", $("qualitySelect").value);
+    store.set("quality", $("qualitySelect").value);
     store.set("invertY", $("invertY").checked); store.set("showFps", $("showFps").checked); store.set("autoRes", $("autoRes").checked); store.set("impactShake", $("camShake").checked);
     setTimeout(() => location.reload(), 50);
   };
@@ -1989,11 +1919,11 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, cpuHeightAt, cpuRay, get lastTap() { return lastTap; }, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size; }, requestFire, rebuildCity, look, camCol, cpuHeightAt, cpuRay, get lastTap() { return lastTap; }, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";
-    await initWorld();
+    if (!(await initWorld())) { $("startBtn").disabled = false; $("startBtn").textContent = "Reload"; $("startBtn").onclick = () => location.reload(); return; }
     try { await buildLobby(); } catch (e) { console.error(e); showFatal("Could not build the start scene: " + ((e && (e.stack || e.message)) || e)); setStatus("Could not build the start scene: " + (e.message || e), true); }
     $("startBtn").disabled = false; $("startBtn").textContent = "Launch";
     window.GFS.ready = true;
