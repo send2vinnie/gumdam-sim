@@ -115,6 +115,12 @@
   const DIFFICULTIES = { easy: "Easy", medium: "Medium", hard: "Hard" };
   settings.difficulty = DIFFICULTIES[store.get("difficulty", null)] ? store.get("difficulty", null) : "medium";
   const CH = () => CHARACTERS[fly.character || settings.character];
+  // profiler (?profile=1): per-frame section times in ms, see the main loop
+  const PROF = /[?&]profile=1\b/.test(location.search) ? { acc: {}, frames: 0, picks: 0, pickFrames: 0, shown: performance.now(), last: 0, tr: 0, report: null, el: null,
+    add(k, t) { const n = performance.now(); this.acc[k] = (this.acc[k] || 0) + n - t; return n; } } : null;
+  if (PROF) { PROF.el = document.createElement("pre"); PROF.el.id = "profOverlay";
+    PROF.el.style.cssText = "position:fixed;left:8px;top:120px;z-index:50;margin:0;padding:6px 8px;font:11px/1.35 monospace;color:#9fffc8;background:rgba(0,0,0,.55);border-radius:6px;pointer-events:none;white-space:pre";
+    document.body.appendChild(PROF.el); }
   function modelUrl(kind) {
     const base = kind === "pullup" ? "models/gundam_rx78_pullup_18m" : "models/gundam_rx78_18m";
     return base + ({ low: "_low", medium: "_med", high: "" }[settings.modelDetail] || "") + ".glb";
@@ -1084,6 +1090,7 @@ void main() {
     let ve = fly.vf * s + fly.vs * c, vn = fly.vf * c - fly.vs * s;
     const excl = [fly.model, fly.pendingModel, fly.rider].filter(Boolean);
 
+    let tp = PROF ? performance.now() : 0;
     // ground under us (sampled every frame; cheap enough at 1.5 m footprint)
     const g = groundHeightAt(fly.lon, fly.lat, excl);
     if (g !== undefined && isFinite(g)) {
@@ -1111,6 +1118,7 @@ void main() {
         }
       }
     }
+    if (PROF) tp = PROF.add("flight:ground+walls", tp);
     const np = offsetLL(fly.lat, fly.lon, ve * dt, vn * dt);
     fly.lat = np.lat; fly.lon = np.lon;
     fly.h += fly.vu * dt;
@@ -1151,6 +1159,7 @@ void main() {
     const turn = Math.max(-1, Math.min(1, fly.yawRate / TURN_RATE + 0.35 * fly.vs / MAX_STRAFE));
     fly.headYaw = (fly.headYaw || 0) + (turn * 30 * DEG - (fly.headYaw || 0)) * kh;
     fly.headPitch = (fly.headPitch || 0) + (Math.max(-1, Math.min(1, fly.vu / MAX_VERT)) * 12 * DEG - (fly.headPitch || 0)) * kh;
+    if (PROF) tp = PROF.add("flight:physics", tp);
     if (fly.model) {
       const dragon = fly.character === "dragon";
       const waddle = dragon ? Math.sin(fly.walkPhase) * 3 * DEG * fly.gait : 0;
@@ -1184,6 +1193,7 @@ void main() {
         poseGundamArm(dt);
       }
     }
+    if (PROF) tp = PROF.add("flight:pose", tp);
     fly.model && (fly.model.show = CAMS[fly.cam].range !== 0);
     if (fly.pendingModel && fly.model) { fly.pendingModel.modelMatrix = fly.model.modelMatrix; fly.pendingModel.show = fly.model.show; }
 
@@ -1203,6 +1213,7 @@ void main() {
     $("impact").classList.toggle("on", fly.impactT > 0);
     $("loadingTiles").classList.toggle("on", tilesets.length > 0 && !allTilesLoaded() && fly.ground === undefined);
     drawCompass();
+    if (PROF) PROF.add("flight:hud", tp);
   }
 
   function updateCamera(dt) {
@@ -1584,14 +1595,35 @@ void main() {
   const FRAME_CAP = LOW_GFX ? 30 : undefined;
   let flyFps = 0;   // smoothed frame rate while flying, shown in the pause menu
   if (FRAME_CAP) viewer.targetFrameRate = FRAME_CAP;
+  // ---- in-app profiler (?profile=1) ---------------------------------------------------
+  // Times each part of the per-frame update and Cesium's render, counts the GPU picks (each pick reads pixels back, so the
+  // first one in a frame waits for the GPU to finish) and shows the averages once a second in a small overlay. Off by default.
+  if (PROF) {
+    for (const f of ["sampleHeight", "pickFromRay", "drillPickFromRay", "pick", "drillPick"]) { const o = scene[f].bind(scene);
+      scene[f] = (...a) => { const t = performance.now(); try { return o(...a); } finally { PROF.add("pick:" + f, t); PROF.picks++; } }; }
+    scene.preRender.addEventListener(() => { PROF.tr = performance.now(); });
+    scene.postRender.addEventListener(() => { const n = performance.now(); PROF.add("render", PROF.tr); PROF.frames++; if (PROF.picks) PROF.pickFrames++; PROF.picks = 0;
+      if (PROF.last) PROF.acc.frame = (PROF.acc.frame || 0) + n - PROF.last; PROF.last = n;
+      if (n - PROF.shown > 1000 && PROF.frames) { const f = PROF.frames, a = PROF.acc;
+        PROF.report = { fps: +(f * 1000 / (n - PROF.shown)).toFixed(1), pickFrames: +(PROF.pickFrames / f).toFixed(2) };
+        for (const k in a) PROF.report[k] = +(a[k] / f).toFixed(2);
+        PROF.el.textContent = Object.entries(PROF.report).map(([k, v]) => k + " " + v).join("\n");
+        PROF.acc = {}; PROF.frames = 0; PROF.pickFrames = 0; PROF.shown = n; } });
+  }
   scene.preUpdate.addEventListener(() => {
     const now = performance.now(); const rawDt = (now - last) / 1000; const dt = Math.min(0.1, rawDt); last = now;
-    updateWards(); updateAutoRes(rawDt);
+    let t0 = PROF ? performance.now() : 0;
+    updateWards(); if (PROF) t0 = PROF.add("wards", t0);
+    updateAutoRes(rawDt);
     if (state.mode === "fly" && rawDt > 0 && rawDt < 1) flyFps = flyFps ? flyFps * 0.97 + 0.03 / rawDt : 1 / rawDt;
-    if (state.mode === "fly") { updateFlight(dt); updateWeapons(dt); updateCamera(dt); applyShake(dt); }
-    else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); }
+    if (state.mode === "fly") {
+      updateFlight(dt); if (PROF) t0 = PROF.add("flight", t0);
+      updateWeapons(dt); if (PROF) t0 = PROF.add("weapons+fx", t0);
+      updateCamera(dt); applyShake(dt); if (PROF) t0 = PROF.add("camera", t0);
+    }
+    else if (state.mode === "lobby" && lobby.active) { readInput(); lobbyCamera(dt); if (PROF) t0 = PROF.add("lobby", t0); }
     else if (state.mode === "pause") readInput();
-    if (state.mode !== "fly") updateEffects(dt);
+    if (state.mode !== "fly") { updateEffects(dt); if (PROF) t0 = PROF.add("fx", t0); }
     if (settings.showFps) { fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { $("hudFps").textContent = " · " + (fpsN / fpsAcc).toFixed(0) + " fps"; fpsAcc = 0; fpsN = 0; } }
   });
 
@@ -1659,7 +1691,7 @@ void main() {
   }
 
   // expose for debugging / automated tests
-  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
+  window.GFS = { viewer, fly, lobby, state, input, keys, settings, startFlight, spawns, get demoMode() { return demoMode; }, get worldMode() { return worldMode; }, get destroyed() { let n = 0; for (const s of hiddenFeatures.values()) n += s.size; return n + hiddenOsm.size + clipCount; }, requestFire, rebuildCity, look, camCol, get prof() { return PROF && PROF.report; }, shots, effects, explode, collapse, beamLines, glowPoints, tilesets, wardSlots, shotLog, get localWorld() { return localWorld; } };
 
   (async () => {
     $("startBtn").disabled = true; $("startBtn").textContent = "Loading…";
